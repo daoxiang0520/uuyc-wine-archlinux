@@ -1,11 +1,12 @@
-# Reply to Alexandre Julliard on Bug 60346
+# Reply to Alexandre Julliard on Bug 60346 (revised)
 #
-# https://bugs.winehq.org/show_bug.cgi?id=60346#c5
+# https://bugs.winehq.org/show_bug.cgi?id=60346
 # He asked: "Is there an actual app that calls this function, and if so, what does it
-# need from it?"
+# need from it?"  Paste everything below the '# ' block.
 #
-# Paste the text below. Inline log excerpt is fine (4 lines, not a log dump) --
-# Wine's own warning is about pasting whole logs and backtraces.
+# This revision corrects my own first draft: I had proposed looking at an "AUMID gap",
+# and on further reading that does not hold for an application that never declares an
+# AppUserModelID. Better to say so here than to have it pointed out.
 
 Yes. NetEase UU Remote 4.40.1 (`GameViewer.exe`, which hosts an Edge WebView2 /
 Chromium browser) calls it at startup, twice, and asks for the same key both times:
@@ -15,30 +16,43 @@ Chromium browser) calls it at startup, twice, and asks for the same key both tim
     fixme:shell:window_prop_store_GetValue 00007F756682E490, {{9f4c2855-9f79-4b39-a8d0-e1d42de1d5f3},5}, 00007FFFFE206BC0
     fixme:ver:GetCurrentApplicationUserModelId (00007FFFFE206BE0 00001648000F0140): stub
 
-The key is PKEY_AppUserModel_ID. It tries the window property store first, and when
-that fails it falls back to GetCurrentApplicationUserModelId -- which is also a stub,
-in ver. So it gets nothing from either path. (The surrounding trace is Chromium's:
-EtwRegisterTraceGuidsW, RtlCaptureStackBackTrace, and the calls are wrapped in C++
-exception frames.)
+On your second question, I have to answer it differently from my first attempt,
+because looking into what the correct answer even is changed the picture.
 
-Being straight about the scope, because it changes what the right fix is: in that
-trace **GetValue is the only store method it calls** -- never SetValue, GetCount, GetAt
-or Commit. So implementing the store would not give this app anything. And I have not
-observed it reading the uninitialised var; it looks like it checks the failure and
-moves on to the fallback. The initialisation in the attached patch is therefore a
-robustness fix against the COM contract rather than something I can show fixes this
-application.
+What it asks for is its AppUserModelID, through both routes that exist: the window
+property store's PKEY_AppUserModel_ID, and GetCurrentApplicationUserModelId. What I
+had not checked is what a process in this state is entitled to get back.
 
-So, which would you rather have:
+Microsoft's AppUserModelIDs documentation says an explicit AppUserModelID is optional,
+that the system otherwise assigns one through heuristics, and that "Applications cannot
+retrieve a system-assigned AppUserModelID". This application never declares one: it
+never calls SetCurrentProcessExplicitAppUserModelID, and it never calls SetValue on the
+store -- in that trace GetValue is the only store method it uses. So on Windows it is
+asking for something it is not entitled to retrieve, and a failure is the correct
+outcome for it.
 
-a) the minimal initialisation as attached -- and I will add a test in
-   dlls/shell32/tests once you tell me what Windows does on the failure path, since
-   that is the part I have no way to measure here; or
+Wine's side is
 
-b) look at the AUMID gap instead. Both GetValue(PKEY_AppUserModel_ID) and
-   GetCurrentApplicationUserModelId are stubs, so no application can obtain its
-   AppUserModelID at all. That is presumably what actually matters to a
-   Chromium-based app, and it is a much larger change than this bug.
+    LONG WINAPI GetCurrentApplicationUserModelId( UINT32 *length, WCHAR *id )
+    {
+        FIXME( "(%p %p): stub\n", length, id );
+        return APPMODEL_ERROR_NO_APPLICATION;
+    }
 
-Happy to do either. I would rather ask than send a patch that turns out to fix nothing
-anyone can observe.
+which is what produces the log line above, and is consistent with the documentation for
+this case.
+
+So the honest answer to "what does it need from it" may be: nothing -- which is also
+why the application just carries on. I had meant to follow up by proposing that the
+AUMID path be implemented; on the evidence above I do not think that holds for an
+application that never declares an ID, so I am not proposing it.
+
+What I cannot rule out is the window property store route. On Windows a window without
+an explicit AppUserModelID inherits the AppUserModelID of the process, and the process
+can have one from its shortcut, so GetValue(PKEY_AppUserModel_ID) might return something
+where Wine returns E_NOTIMPL. I have no Windows machine to check that on and I am not
+going to guess.
+
+Which leaves the original question of this report: whether initialising the out
+parameter is worth doing on its own. It is a much smaller claim than the one I opened
+with, and I would understand if the answer is that it is not.
