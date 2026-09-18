@@ -195,9 +195,16 @@ static void test_aumid_apis(void)
     printf("  GetCurrentApplicationUserModelId -> %ld", (long)rc);
     if (rc == 0) printf("  value=\"%ls\"\n", buf); else printf("  (no value)\n");
 
-    printf("\n  On Windows the last call should return 0 with \"Verify.Explicit.AUMID\",\n");
-    printf("  because an explicitly set id is retrievable. If it fails here while\n");
-    printf("  the explicit getter succeeds, Wine's two APIs disagree.\n");
+    /*
+     * Measured on Windows: the last call returns 15703 here too, even though the
+     * explicit getter returns the value. GetCurrentApplicationUserModelId is an
+     * AppModel API for packaged applications and does not report a shell-level
+     * AppUserModelID for a classic Win32 process, so the two are not in conflict
+     * and Wine matches. Recorded rather than removed, because I first read this as
+     * a Wine inconsistency and it is not one.
+     */
+    printf("\n  Windows returns 15703 here as well (measured), so Wine matches and\n");
+    printf("  the two APIs are not in conflict.\n");
 }
 
 int main(void)
