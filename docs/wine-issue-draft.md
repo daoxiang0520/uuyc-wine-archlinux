@@ -4,17 +4,36 @@
 
 ## Where to submit
 
-Wine's bug tracker is GitLab (the old Bugzilla is retired):
+Wine runs two systems and this draft previously got them backwards. Corrected
+2026-09-18 after checking both:
 
-1. Create or sign in to a [gitlab.winehq.org](https://gitlab.winehq.org) account.
-2. Open a new issue on **wine / wine** → *Issues* → *New issue*:
-   <https://gitlab.winehq.org/wine/wine/-/issues/new>
-3. Paste the sections below (from "Title" through "Questions for maintainers") as the
-   issue body.
-4. Attach the files produced by `wine-issue-evidence/collect.sh`:
-   `00-host.txt`, `01-vulkaninfo.txt`, `02-vainfo.txt`, `03-d3dprobe.txt`,
-   `05-wine-log-excerpt.txt`, plus `uuyc-d3dprobe.c` so maintainers can build the probe.
-5. Tag it `d3d11` if the label exists; otherwise leave labels alone.
+| | address | what goes there |
+| --- | --- | --- |
+| Bugzilla | <https://bugs.winehq.org> | bug reports. **Still active** -- the newest report is #60345, filed today |
+| GitLab | <https://gitlab.winehq.org> | code, merge requests, wiki. MR !11388 lives here |
+
+So a *report* goes to Bugzilla and a *patch* goes to GitLab. Bugzilla and GitLab
+accounts are separate.
+
+For this finding specifically, it may be better to attach it to the existing
+Bugzilla report for the same class of problem -- see `wine-mr11388-comment.md` --
+rather than file a new one; the D3D11 observation below is separate and does
+warrant its own report:
+
+1. Create or sign in to a [bugs.winehq.org](https://bugs.winehq.org) account.
+2. File a new bug in the **Wine** product:
+   <https://bugs.winehq.org/enter_bug.cgi?product=Wine>
+   Component `d3d11`, version `11.17`.
+3. Paste the sections below (from "Title" through "Questions for maintainers") into
+   the bug description. Put the application name in the summary -- recent reports look
+   like `d3d11: <what breaks> (<app>)`, and Bugzilla's one-bug-per-report rule means the
+   D3D11 observation must not be mixed with anything else.
+4. Attach, via *Add an attachment*, the files produced by
+   `wine-issue-evidence/collect.sh`: `00-host.txt`, `01-vulkaninfo.txt`,
+   `02-vainfo.txt`, `03-d3dprobe.txt`, `05-wine-log-excerpt.txt`, plus
+   `uuyc-d3dprobe.c` so maintainers can build the probe themselves.
+5. Set Component to `d3d11` and Version to the Wine version you tested (`11.17`).
+   Bugzilla has no labels.
 
 Notes on tone that matter for Wine: the report states observations and asks questions
 rather than asserting what the fix should be, and it does not claim the application is
