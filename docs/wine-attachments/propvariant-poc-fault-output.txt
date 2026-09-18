@@ -1,0 +1,16 @@
+# uuyc-propvariant-poc.exe --fault
+# A deterministic access violation produced by the uninitialised out parameter.
+# Wine 11.17, the UU Remote client prefix, x86_64.
+
+  planted a string at 00007FFFFECF0000, then released the page
+  GetValue -> 0x80004001; vt=31 pwszVal=00007FFFFECF0000
+  the unguarded caller now scans the released page ...
+
+--- Wine's report ---
+Unhandled exception: page fault on read access to 0x00007ffffecf0000 in 64-bit code (0x006ffffe97434b).
+
+--- backtrace: the faulting instruction and the caller that skipped the HRESULT ---
+Backtrace:
+=>0 0x006ffffe97434b in ucrtbase (+0x6434b) (0x006ffffe97e8f0)
+  3 0x000001400029ab in uuyc-propvariant-poc (+0x29ab) (0x0000014001d0c8)
+0x006ffffe97434b ucrtbase+0x6434b: cmpw $0, (%rsi)

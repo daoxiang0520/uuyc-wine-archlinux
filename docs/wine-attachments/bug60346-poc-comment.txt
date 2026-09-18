@@ -1,0 +1,49 @@
+# Comment + attachments for Bug 60346
+#
+# https://bugs.winehq.org/show_bug.cgi?id=60346
+# Attach: propvariant-poc.c, propvariant-poc-fault-output.txt
+# Paste the text below (the '# ' lines are instructions, not part of the comment).
+
+Attached is a focused PoC for the same out parameter, which makes the consequence
+deterministic instead of dependent on what happens to be on the stack.
+
+It rests on one observation: the value a caller reads is not random memory, it is
+the caller's **own previous value**, because GetValue leaves the slot exactly as it
+found it. That makes the hazard reproducible every time rather than a matter of
+luck:
+
+  M2  stale read        a PROPVARIANT variable reused across queries -- the second
+                        query fails, the caller reads the first query's value
+  M3  use-after-free    the stale value is a pointer the caller has already freed
+  M4  access violation  the stale value points at a page that was released
+
+M4 output, same addresses on every run:
+
+    planted a string at 00007FFFFECF0000, then released the page
+    GetValue -> 0x80004001; vt=31 pwszVal=00007FFFFECF0000
+    Unhandled exception: page fault on read access to 0x00007ffffecf0000
+    Backtrace:
+    =>0 0x006ffffe97434b in ucrtbase (+0x6434b)
+       3 0x000001400029ab in uuyc-propvariant-poc (+0x29ab)
+    0x006ffffe97434b ucrtbase+0x6434b: cmpw $0, (%rsi)
+
+The faulting address is the value of pwszVal; the instruction that faults is the
+wide-string scan a caller runs on it.
+
+Two things about the program that are deliberate, so they are not mistaken for
+tricks:
+
+* M2-M4 drive a stand-in inside the program whose GetValue reproduces the stub
+  exactly -- returns E_NOTIMPL, touches nothing. That is so the demonstration does
+  not depend on whether the Wine in front of you already has the initialisation,
+  nor on the stack, and so it can be run on Windows as well. M1 in the same program
+  runs the real store and reports which behaviour it sees (on this machine it
+  prints vt=0, i.e. the patched behaviour).
+* I am not claiming this as an exploit. The slot's contents are placed by the
+  caller, so they are not attacker-controlled, and the worst outcome is a crash in
+  the caller's own process.
+
+It also does not show that any shipped application is affected. What I have shown
+is that one calls this (previous comment) and that it handles the failure. This
+program exists to show what an unguarded caller pays -- not to argue that Wine is
+wrong here, which is still the open question you raised.
