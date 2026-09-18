@@ -195,3 +195,45 @@ client 4.40.1 in a private prefix. Only the `SHGetPropertyStoreForWindow` stub p
 one `GetValue` call is needed to see the uninitialised `var`; any test program that
 calls `IPropertyStore::GetValue` on the window store and ignores the `HRESULT` will
 show it.
+
+## 上游现状与建议的报告形式（2026-09-18 核对）
+
+直接取 `master` 的 `dlls/shell32/shell32_main.c` 核对，三个方法**至今未改**：
+
+```c
+static HRESULT WINAPI window_prop_store_GetCount(IPropertyStore *iface, DWORD *count)
+{
+    FIXME("%p, %p\n", iface, count);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI window_prop_store_GetAt(IPropertyStore *iface, DWORD prop, PROPERTYKEY *key)
+{
+    FIXME("%p, %lu,%p\n", iface, prop, key);
+    return E_NOTIMPL;
+}
+
+static HRESULT WINAPI window_prop_store_GetValue(IPropertyStore *iface, const PROPERTYKEY *key, PROPVARIANT *var)
+{
+    FIXME("%p, {%s,%lu}, %p\n", iface, debugstr_guid(&key->fmtid), key->pid, var);
+    return E_NOTIMPL;
+}
+```
+
+这段写法来自 Hans Leidekker 2019-11-01 引入该桩的补丁
+（<https://list.winehq.org/hyperkitty/list/wine-devel@list.winehq.org/thread/XDAY46HSO6FODADKRF7RH2K4T4UKHREM/>），
+不是有人在修的中间态。因此在已检索范围内**没有重复报告**。
+
+**建议直接发 MR 而不是 issue。** Wine 的惯例是有测试的补丁优先；本仓库的
+`support/shshim/testshshim.c` 已经是可直接改造的测试素材——把毒化断言写成
+`dlls/shell32/tests/` 里的 `ok(vt == VT_EMPTY, ...)` 形式即可。
+
+### 提交时必须与客户端崩溃切割
+
+`window_prop_store_GetValue` 与「点进桌面崩溃」是**两个独立缺陷**，后者根因是
+`GetOutlineTextMetricsW` 对 bitmap-only SFNT 字体返回 0 而 Qt 不检查返回值
+（见 `qwindows-fontname-crash.md`，上游对应 Bug 53795 / MR !11388）。
+
+本文件早期版本把两者混为一谈，并据此宣称"打完补丁崩溃就消失了"——那个因果链
+已被实测推翻。**报告里绝不能再出现这种关联**，否则维护者一旦发现证伪，整份报告
+的可信度都会受损。
