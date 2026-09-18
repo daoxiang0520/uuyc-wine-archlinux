@@ -273,3 +273,51 @@ static HRESULT WINAPI window_prop_store_GetValue(IPropertyStore *iface, const PR
 本文件早期版本把两者混为一谈，并据此宣称"打完补丁崩溃就消失了"——那个因果链
 已被实测推翻。**报告里绝不能再出现这种关联**，否则维护者一旦发现证伪，整份报告
 的可信度都会受损。
+
+## Bug 60346 的结局：WONTFIX —— 因为查不到受影响的 app（2026-09-18）
+
+Alexandre Julliard 的答复：
+
+> That's not enough reason, no. We only fix behavior differences if they affect a real app.
+
+**这条标准值得记住：缺陷 + 补丁 + 真机实测的 Windows 行为差异，仍然不够；必须有真实
+应用因此受损。**
+
+### 检索结果：确实没有
+
+| 检索 | 结果 |
+| --- | --- |
+| Wine Bugzilla 全文 `SHGetPropertyStoreForWindow` | **全库 4 条**（含本条） |
+| 其中真实应用 | 3 条，**真因均在其他地方** |
+| 全网搜 fixme 字符串 | 只搜到 2019 年引入该桩的补丁本身 |
+
+三条应用逐一核过：
+
+* **Battle.net（#55613）** 症状是右键菜单失效，报告人自己指向 `user32` 的指针处理；
+  日志里的属性存储调用是启动时写任务栏身份，与故障无关。
+* **CDBurnerXP（#58780）** 在该报告内已被 Esme Povirk 诊断为 Wine Mono / COM interop
+  问题，外加 `wbemprox` 的 `Win32_PnPEntity` 缺 `Description` 字段。
+* **Avant Browser（#58821）** 报告无可用描述，NEEDINFO 后烂尾。
+
+### 为什么注定查不到（结构性原因）
+
+这个存储承载的是 **Windows shell 数据**：窗口级 `AppUserModelID`，以及任务栏按钮的
+`RelaunchCommand` / `RelaunchIconResource` / `RelaunchDisplayNameResource`。
+**Wine 没有 Windows 任务栏** —— 窗口管理归桌面环境 —— 所以这些值**无论调用成功与否
+都没有消费者**。
+
+推论：应用不可能被这个差异**可见地**弄坏，除非它本来就依赖 Wine 不具备的 shell 集成
+—— 而那样的话，坏的原因是缺少 shell，不是这个存储。
+
+唯一在形状上可能不同的是：把 `FAILED(GetValue)` 当致命错误的调用方（Windows 给
+`S_OK`，Wine 给 `E_NOTIMPL`，它只在 Wine 下走错误分支）。未找到这样的调用方，也不
+打算继续找 —— 它要的东西在这里同样没有消费者。
+
+### 这次仍然产出了可复用的东西
+
+* `windows-verify/verify-windows.c` + `.github/workflows/verify-windows.yml`：
+  **一条 CI 就能在真 Windows 上测出某个 Wine 行为与 Windows 的差异**。这套骨架对以后
+  任何"Wine 到底该返回什么"的问题都能直接复用，不依赖手上有 Windows 机器。
+* `windows-verify-output.txt`：真实 Windows 上该存储的参考行为
+* 三次自我更正（PROPVARIANT 因果、`otmpFullName` 归因、AUMID 缺口）都在被维护者看到
+  之前完成，所以 Julliard 的拒绝理由是"证据不够"而非"报告有错"
