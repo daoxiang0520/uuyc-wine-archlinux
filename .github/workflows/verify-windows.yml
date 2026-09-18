@@ -1,0 +1,46 @@
+name: verify-windows
+
+# Settles, on a real Windows host, the question Wine Bug 60346 left open:
+# does the window property store initialise its PROPVARIANT out parameter when
+# GetValue fails?  Wine returns E_NOTIMPL without touching it; whether that
+# matches Windows cannot be decided from Linux.
+#
+# Run it from Actions -> verify-windows -> Run workflow, then read the log.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'docs/wine-attachments/windows-verify/**'
+      - '.github/workflows/verify-windows.yml'
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # cl.exe is not on PATH in a plain cmd step on the hosted runners.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build (MSVC)
+        shell: cmd
+        working-directory: docs/wine-attachments/windows-verify
+        run: |
+          cl /nologo /W4 /D_WIN32_WINNT=0x0601 /DNTDDI_VERSION=0x06010000 verify-windows.c ^
+             /link shell32.lib ole32.lib propsys.lib uuid.lib /out:verify-windows.exe
+          if not exist verify-windows.exe exit /b 1
+
+      - name: Run
+        shell: cmd
+        working-directory: docs/wine-attachments/windows-verify
+        run: verify-windows.exe
+
+      - name: Also run under MinGW (different toolchain, same question)
+        if: always()
+        shell: cmd
+        working-directory: docs/wine-attachments/windows-verify
+        run: |
+          where gcc || exit /b 0
+          gcc -O2 -o verify-windows-mingw.exe verify-windows.c -lshell32 -lole32 -luuid || exit /b 0
+          verify-windows-mingw.exe
