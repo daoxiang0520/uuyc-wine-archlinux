@@ -1,0 +1,22 @@
+uuyc-propvariant-poc -- window property store, uninitialised out parameter
+the caller here is one that does not check GetValue's HRESULT
+
+=== M1: the real store on this Wine ===
+  GetValue(PKEY_AppUserModel_ID) -> 0x80004001
+  vt = 0
+  RESULT: initialised to vt=0 -- this Wine already fixes it
+
+--- M2 onwards use a stand-in that reproduces Wine's stub exactly ---
+
+=== M2: a caller that reuses one PROPVARIANT ===
+  GetValue -> 0x80004001
+  caller reads "AppUserModelID-that-GetValue-never-returned"
+  RESULT: the caller got a value this call never produced
+
+=== M3: the stale value is a freed pointer ===
+  caller freed 00007FFFFE333100; the slot still holds that address
+  GetValue -> 0x80004001; slot holds 00007FFFFE333100
+  RESULT: the unguarded caller dereferences a dangling pointer
+
+Run with --fault for M4: the unguarded dereference as an actual
+access violation rather than a claim about one.
