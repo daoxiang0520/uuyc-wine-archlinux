@@ -66,7 +66,9 @@ fi
 
 : "${GITHUB_TOKEN:?set GITHUB_TOKEN to a token with repo scope (it is never printed)}"
 
-curl_args=(-sS -X POST
+# No -X here: the tag lookup below is a GET, and forcing POST on it would ask
+# the API to create a ref with no body. POST is added where it is wanted.
+curl_args=(-sS
            -H "Authorization: Bearer $GITHUB_TOKEN"
            -H "Accept: application/vnd.github+json"
            -H "X-GitHub-Api-Version: 2022-11-28")
@@ -79,7 +81,7 @@ if ! curl "${curl_args[@]}" -o /dev/null -w '%{http_code}' "$api/git/ref/tags/$t
     head_sha=$(git -C "$here" rev-parse HEAD)
     printf 'creating tag %s at %s\n' "$tag" "${head_sha:0:12}"
     printf '{"ref":"refs/tags/%s","sha":"%s"}' "$tag" "$head_sha" \
-        | curl "${curl_args[@]}" -H 'Content-Type: application/json' \
+        | curl "${curl_args[@]}" -X POST -H 'Content-Type: application/json' \
                --data-binary @- -o /dev/null -w '  tag -> HTTP %{http_code}\n' "$api/git/refs"
 fi
 
@@ -106,7 +108,7 @@ EOF
 
 printf '{"tag_name":"%s","name":"%s","body":%s,"draft":false,"prerelease":false}' \
     "$tag" "$tag" "$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')" \
-    | curl "${curl_args[@]}" -H 'Content-Type: application/json' \
+    | curl "${curl_args[@]}" -X POST -H 'Content-Type: application/json' \
            --data-binary @- "$api/releases" -o /tmp/uuyc-release.json \
            -w 'release -> HTTP %{http_code}\n'
 
