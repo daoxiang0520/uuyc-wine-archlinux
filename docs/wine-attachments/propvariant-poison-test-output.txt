@@ -1,0 +1,24 @@
+# propvariant-poison-test.exe, built with:
+#   x86_64-w64-mingw32-gcc -O2 -o propvariant-poison-test.exe propvariant-poison-test.c -lshell32 -lole32 -luuid
+#
+# Run on Wine 11.17 WITH the attached patch applied (the shell32.dll on this
+# machine is the patched build):
+
+=== SHGetPropertyStoreForWindow ===
+  -> 0  store=00007FFFFE8E0E80
+
+=== GetValue(PKEY_AppUserModel_ID) with a poisoned PROPVARIANT ===
+  GetValue -> 0x80004001
+  vt      = 0
+  RESULT: PROPVARIANT WAS INITIALISED -- fixed
+  (no string value; pwszVal=0000000000000000)
+
+# Run on stock Wine 11.17, same binary, before any patch (recorded earlier):
+#
+#   === GetValue(PKEY_AppUserModel_ID) with a poisoned PROPVARIANT ===
+#     GetValue -> 0x80004001
+#     vt      = 43947
+#     RESULT: PROPVARIANT WAS NOT TOUCHED -- the bug is present
+#     (no string value; pwszVal=ABABABABABABABAB)
+#
+# vt = 43947 = 0xABAB and pwszVal = 0xABABABABABABABAB are the poison, untouched.
