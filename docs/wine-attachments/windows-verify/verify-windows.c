@@ -81,6 +81,30 @@ static void test_poisoned(IPropertyStore *store)
         printf("  VERDICT: vt=%u -- Windows returned a value, Wine is missing more\n", var.vt);
 }
 
+/*
+ * The other two methods of the same store. The patch has to cover only what is
+ * actually measured here, so they get their own probe rather than being assumed
+ * to behave like GetValue.
+ */
+static void test_count_and_at(IPropertyStore *store)
+{
+    DWORD count;
+    PROPERTYKEY key;
+    HRESULT hr;
+
+    printf("\n=== 1b. GetCount / GetAt on the same store ===\n");
+
+    count = POISON_VT;
+    hr = store->lpVtbl->GetCount(store, &count);
+    printf("  GetCount -> 0x%08lx  count=%lu", (unsigned long)hr, (unsigned long)count);
+    printf("%s\n", count == POISON_VT ? "   (untouched)" : "   (written)");
+
+    memset(&key, 0xAB, sizeof(key));
+    hr = store->lpVtbl->GetAt(store, 0, &key);
+    printf("  GetAt    -> 0x%08lx  pid=%lu", (unsigned long)hr, (unsigned long)key.pid);
+    printf("%s\n", key.pid == 0xABABABABu ? "   (untouched)" : "   (written)");
+}
+
 /* Control: can the store round-trip a value at all here? */
 static void test_roundtrip(IPropertyStore *store)
 {
@@ -215,6 +239,7 @@ int main(void)
     }
 
     test_poisoned(store);
+    test_count_and_at(store);
     test_roundtrip(store);
     store->lpVtbl->Release(store);
     test_aumid_apis();

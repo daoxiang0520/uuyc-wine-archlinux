@@ -24,6 +24,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build (MSVC)
+        continue-on-error: true
         shell: cmd
         working-directory: docs/wine-attachments/windows-verify
         run: |
@@ -36,11 +37,11 @@ jobs:
         working-directory: docs/wine-attachments/windows-verify
         run: verify-windows.exe
 
-      - name: Also run under MinGW (different toolchain, same question)
-        if: always()
+      # MinGW is the build that works on the hosted runners, so it is the one
+      # whose output matters; MSVC above is best-effort.
+      - name: Build and run (MinGW)
         shell: cmd
         working-directory: docs/wine-attachments/windows-verify
         run: |
-          where gcc || exit /b 0
-          gcc -O2 -o verify-windows-mingw.exe verify-windows.c -lshell32 -lole32 -luuid || exit /b 0
+          gcc -O2 -Wall -Wextra -o verify-windows-mingw.exe verify-windows.c -lshell32 -lole32 -luuid
           verify-windows-mingw.exe
