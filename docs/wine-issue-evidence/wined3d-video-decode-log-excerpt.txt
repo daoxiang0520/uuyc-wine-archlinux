@@ -1,0 +1,41 @@
+# wined3d/d3d11/vulkan debug excerpts
+# source: WINEDEBUG=+seh,+d3d,+d3d11,+dxgi,+wined3d,+vulkan,+winevulkan  (Wine 11.17)
+# host: Intel CometLake-U GT2 (8086:9b41), Mesa 26.2.2 anv, renderer=vulkan
+
+## 1. Vulkan adapter is active
+0330:trace:d3d:wined3d_adapter_vk_init adapter_vk 00007FFFFF51A280, ordinal 0, wined3d_creation_flags 0x7ec8.
+0330:trace:d3d:wined3d_adapter_vk_init   VkPhysicalDeviceSamplerFilterMinmaxProperties:
+0330:trace:d3d:wined3d_adapter_vk_init     filterMinmaxSingleComponentFormats: 0x1.
+adapter_vk_* total: 2422
+adapter_gl_* total: 0
+
+## 2. Video-related device extensions enabled: none
+VK_KHR_video_queue/decode_queue/decode_h264 occurrences: 0
+video-related entries in wined3d device extension list: 0
+
+## 3. Profile enumeration by the application
+03e4:trace:d3d:wined3d_device_get_video_decode_profile_count device 00007FFFFE83BF20.
+03e4:trace:d3d:wined3d_device_get_video_decode_profile_count device 00007FFFFE83BF20.
+03e4:trace:d3d:wined3d_device_get_video_decode_profile_count device 00007FFFFE83BF20.
+03e4:trace:d3d:wined3d_device_get_video_decode_profile_count device 00007FFFFE83BF20.
+total calls: 16
+
+## 4. Format-support queries and device removal
+CheckFormatSupport calls: 116
+  format 87 (NV12) queried: 8
+  format 103 (P010) queried: 5
+055c:fixme:d3d11:d3d11_device_CheckFormatSupport iface 00007FFFFEF489A0, format 85, format_support 0000594C001123D4 partial-stub!
+055c:fixme:d3d11:d3d11_device_CheckFormatSupport iface 00007FFFFEF489A0, format 115, format_support 0000594C001123DC partial-stub!
+
+GetDeviceRemovedReason (stub) calls: 19
+055c:warn:d3d11:d3d11_device_GetDeviceRemovedReason iface 00007FFFFEF489A0 stub!
+055c:warn:d3d11:d3d11_device_GetDeviceRemovedReason iface 00007FFFFEF489A0 stub!
+
+055c:warn:d3d:wined3d_swapchain_cleanup Something's still holding back buffer 0 (00007FFFFEFAA0A0).
+055c:warn:d3d:wined3d_swapchain_cleanup Something's still holding back buffer 0 (00007FFFFEFAAC50).
+
+## 5. Session swapchain (the window that opens and closes)
+055c:trace:dxgi:dxgi_factory_CreateSwapChainForHwnd iface 00007FFFFEF4C580, device 00007FFFFEF489A0, window 0000000000010146, desc 00007FFFFE90CDD0, fullscreen_desc 0000000000000000, output 0000000000000000, swapchain 00007FFFFE90CE18.
+055c:trace:dxgi:dxgi_factory_CreateSwapChainForHwnd iface 00007FFFFEF4C580, device 00007FFFFEF489A0, window 00000000000200F6, desc 00007FFFFE90CDD0, fullscreen_desc 0000000000000000, output 0000000000000000, swapchain 00007FFFFE90CE18.
+03e4:trace:d3d:wined3d_swapchain_state_init Client rect (0,0)-(113,2).
+03d4:trace:d3d:wined3d_swapchain_state_init Client rect (0,0)-(113,2).

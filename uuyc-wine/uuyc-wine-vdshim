@@ -1,0 +1,37 @@
+#!/usr/bin/bash
+# uuyc-wine-vdshim -- install/remove the D3D11 video-decode shim in the prefix.
+#
+# What it fixes
+# -------------
+# Wine 11.x implements ID3D11VideoDevice, but two methods the UU Remote client
+# needs are still stubs:
+#
+#   ID3D11VideoDevice::CheckVideoDecoderFormat   -> "stub!"
+#   ID3D11VideoDevice::GetVideoDecoderConfigCount -> E_NOTIMPL
+#
+# Measured from a --debug-crash log on this machine, the client gets a real
+# hardware profile back from Wine (DXVA_ModeH264_VLD_NoFGT), asks
+# CheckVideoDecoderFormat whether that profile supports NV12, receives a failure
+# from the stub, and gives up -- the device is then reported removed and the
+# session window closes.
+#
+# This shim is a d3d11.dll proxy that answers those two calls and forwards
+# everything else, so the client can reach CreateVideoDecoder.
+#
+# It is not a hack around a driver problem: with ANV_DEBUG=video-decode the
+# driver side is already fully working (see uuyc-wine-vkvideo).
+#
+#   uuyc-wine-vdshim install    # copy the dll in and set the per-app overrides
+#   uuyc-wine-vdshim remove     # undo both
+#   uuyc-wine-vdshim status     # show what is currently in place
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+share="${UUYC_WINE_SHARE_DIR:-/usr/share/uuyc-wine}"
+deploy="$share/vdshim/deploy.sh"
+
+[[ -r $deploy ]] || { printf 'missing %s\n' "$deploy" >&2; exit 1; }
+
+exec bash "$deploy" "$@"

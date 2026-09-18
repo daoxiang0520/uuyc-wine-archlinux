@@ -1,0 +1,176 @@
+#!/usr/bin/bash
+# uuyc-wine-dumpinfo -- say what the client's newest crash dump died of.
+#
+# The client writes its own crash dumps under log/client/Sentry/reports/. They are
+# plain 32/64-bit minidumps, and they are far more informative than WINEDEBUG:
+# Wine's log showed "no unhandled exception" for a crash that had actually killed
+# the whole process, because the client's own crash handler swallowed it first.
+#
+# What this prints:
+#   - which process died and when
+#   - the exception code in words
+#   - the module and offset of the faulting instruction
+#   - for access violations, whether it was a read or a write and at what address
+#
+# That is usually enough to name the layer: a fault inside Qt5Core.dll is a UI
+# problem, one inside d3d11.dll is graphics, one inside the client's own exe is
+# the client.
+#
+#   uuyc-wine-dumpinfo              # newest dump
+#   uuyc-wine-dumpinfo --all        # every dump, oldest first
+#   uuyc-wine-dumpinfo /path/to.dmp # a specific file
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+prefix="${UUYC_WINE_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/uuyc-wine/wineprefix}"
+root="$prefix/drive_c/Program Files/Netease/GameViewer"
+reports="$root/log/client/Sentry/reports"
+
+mode=newest
+target=""
+for arg in "$@"; do
+    case $arg in
+        --all) mode=all ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) target=$arg ;;
+    esac
+done
+
+if [[ -n $target ]]; then
+    files=("$target")
+elif [[ -d $reports ]]; then
+    mapfile -t files < <(ls -1t "$reports"/*.dmp 2>/dev/null)
+else
+    printf 'no Sentry dump directory: %s\n' "$reports" >&2
+    exit 1
+fi
+
+if ((${#files[@]} == 0)); then
+    printf 'no crash dumps in %s\n' "$reports" >&2
+    printf 'the client has not crashed (or Sentry has not written a report yet)\n' >&2
+    exit 1
+fi
+
+[[ $mode == all ]] || files=("${files[0]}")
+
+python3 - "${files[@]}" <<'PY'
+import struct, sys, os, datetime
+
+MSGS = {
+    0xC0000005: "ACCESS_VIOLATION",
+    0xC000001D: "ILLEGAL_INSTRUCTION",
+    0xC0000094: "INTEGER_DIVIDE_BY_ZERO",
+    0xC0000096: "PRIVILEGED_INSTRUCTION",
+    0xC00000FD: "STACK_OVERFLOW",
+    0xC0000374: "HEAP_CORRUPTION",
+    0xC0000409: "STACK_BUFFER_OVERRUN",
+    0x80000003: "BREAKPOINT",
+    0xE06D7363: "C++ EXCEPTION (MSVC throw)",
+    0x80000029: "ABANDONED",
+}
+# Layers whose name alone tells you which subsystem to look at.
+LAYER = [
+    ("qt5core", "UI toolkit (Qt5Core)"),
+    ("qt5gui",  "UI toolkit (Qt5Gui)"),
+    ("qt5widgets", "UI toolkit (Qt5Widgets)"),
+    ("d3d11",   "Direct3D 11"),
+    ("dxgi",    "DXGI"),
+    ("wined3d", "wined3d (Wine's D3D)"),
+    ("vulkan",  "Vulkan"),
+    ("msedgewebview2", "WebView2 / Edge"),
+    ("streamer", "the streamer (session pipeline)"),
+    ("gameviewer", "the client itself"),
+]
+
+def layer_of(name):
+    low = name.lower()
+    for key, what in LAYER:
+        if key in low:
+            return what
+    return None
+
+def analyse(path):
+    d = open(path, "rb").read()
+    if d[:4] != b"MDMP":
+        print(f"{os.path.basename(path)}: not a minidump")
+        return
+    _, _, nstreams, rva, _, ts, _ = struct.unpack_from("<4sIIIIIQ", d, 0)
+    streams = {}
+    for i in range(nstreams):
+        t, size, r = struct.unpack_from("<III", d, rva + i * 12)
+        streams.setdefault(t, []).append((size, r))
+
+    when = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    mods = []
+    if 4 in streams:
+        _, r4 = streams[4][0]
+        nmod = struct.unpack_from("<I", d, r4)[0]
+        for i in range(nmod):
+            off = r4 + 4 + i * 108
+            if off + 108 > len(d):
+                break
+            base, msize, _, _, namerva = struct.unpack_from("<QIIII", d, off)
+            if namerva + 4 > len(d):
+                continue
+            slen = struct.unpack_from("<I", d, namerva)[0]
+            name = d[namerva + 4:namerva + 4 + slen].decode("utf-16-le", "replace")
+            mods.append((base, msize, name))
+
+    exe = next((m[2] for m in mods if m[2].lower().endswith(".exe")), "?")
+
+    print(f"=== {os.path.basename(path)}")
+    print(f"    written : {when}   size {len(d):,} bytes")
+    print(f"    process : {os.path.basename(exe)}")
+
+    if 6 not in streams:
+        print("    no exception stream (the dump may be a hang report)")
+        return
+    _, r6 = streams[6][0]
+    code, _, _, eaddr, _, _ = struct.unpack_from("<IIQQII", d, r6 + 8)
+    params = struct.unpack_from("<15Q", d, r6 + 40)
+
+    what = MSGS.get(code, "unknown")
+    print(f"    exception: 0x{code:08x}  {what}")
+
+    hit = None
+    for base, msize, name in mods:
+        if base <= eaddr < base + msize:
+            hit = (os.path.basename(name), eaddr - base, base)
+            break
+    if hit:
+        print(f"    faulting : {hit[0]} + 0x{hit[1]:x}")
+    else:
+        print(f"    faulting : 0x{eaddr:x} (no module owns this address)")
+
+    if code == 0xC0000005:
+        kind = {0: "read", 1: "write", 8: "execute"}.get(params[0], f"?({params[0]})")
+        print(f"    access   : {kind} at 0x{params[1]:x}")
+        if params[1] in (0x0, 0xFFFFFFFFFFFFFFFF):
+            print("               a near-null / sentinel pointer: something was used")
+            print("               before it was set, or a lookup returned nothing.")
+
+    if hit:
+        lay = layer_of(hit[0])
+        if lay:
+            print(f"    layer    : {lay}")
+
+    # A short verdict, so the output is usable without interpreting it.
+    print()
+    if hit and layer_of(hit[0] or "") == "UI toolkit (Qt5Core)":
+        print("    -> the UI toolkit faulted, not the graphics stack. A vanishing")
+        print("       client window with this dump is a client/Qt crash.")
+    elif hit and "d3d11" in hit[0].lower():
+        print("    -> Direct3D 11 faulted. Check whether a d3d11.dll shim is")
+        print("       installed (uuyc-wine-vdshim status) before blaming the driver.")
+    elif hit and "streamer" in hit[0].lower():
+        print("    -> the session pipeline faulted during a connection attempt.")
+    elif hit and hit[0].lower().startswith("gameviewer"):
+        print("    -> the client's own code faulted.")
+
+for p in sys.argv[1:]:
+    if os.path.isfile(p):
+        analyse(p)
+        print()
+PY

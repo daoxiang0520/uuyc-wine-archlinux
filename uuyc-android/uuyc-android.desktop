@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=NetEase UU Remote (Android)
+Name[zh_CN]=网易UU远程（安卓）
+GenericName=Remote Desktop
+GenericName[zh_CN]=远程桌面
+Comment=Run the UU Remote Android client inside Waydroid
+Comment[zh_CN]=在 Waydroid 中运行网易UU远程安卓客户端
+Exec=uuyc-android
+TryExec=uuyc-android
+Icon=uuyc-android
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;android;waydroid;UU Remote;UU远程;网易;
+StartupNotify=true

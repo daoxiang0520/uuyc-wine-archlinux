@@ -1,0 +1,89 @@
+#!/usr/bin/bash
+# uuyc-wine-hwdecode -- host VA-API and Vulkan capability summary
+#
+# IMPORTANT CORRECTION: an earlier version of this script said Wine implements
+# hardware decoding on top of VA-API. That is wrong. wined3d has exactly one
+# hardware video backend -- Vulkan Video -- and never calls VA-API. So the
+# vainfo output below proves the *hardware* can decode H.264; it does NOT prove
+# the Wine client has a decoder.
+#
+# The check that actually matters is Vulkan Video extension exposure, and on
+# Intel (ANV) that is gated behind a debug flag. Use uuyc-wine-vkvideo for that.
+#
+#   uuyc-wine-hwdecode          # run in the same terminal you start uuyc-wine in
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+section() { printf '\n===== %s =====\n' "$1"; }
+ok=$'\033[32mok\033[0m'
+bad=$'\033[31mFAIL\033[0m'
+
+section "1. render node"
+found=0
+for node in /dev/dri/renderD*; do
+    [[ -e $node ]] || continue
+    found=1
+    printf '  %s %s\n' "$ok" "$(ls -l "$node")"
+    if [[ -r $node && -w $node ]]; then
+        printf '      readable + writable for %s\n' "$(id -un)"
+    else
+        printf '  %s not writable for %s -- add the video/render group\n' "$bad" "$(id -un)"
+    fi
+    printf '      groups: %s\n' "$(id -nG)"
+done
+((found)) || printf '  %s no render node in this namespace\n' "$bad"
+
+section "2. host VA-API (proves the GPU can decode; Wine does not use it)"
+if command -v vainfo >/dev/null 2>&1; then
+    timeout 40 vainfo 2>&1 | head -14 | sed 's/^/  /'
+    printf '\n  environment: LIBVA_DRIVER_NAME=%s  LIBVA_DRIVERS_PATH=%s\n' \
+        "${LIBVA_DRIVER_NAME:-<unset>}" "${LIBVA_DRIVERS_PATH:-<unset>}"
+else
+    printf '  vainfo is not installed:  sudo pacman -S libva-utils\n'
+fi
+
+section "3. host Vulkan (what renderer=vulkan needs)"
+if command -v vulkaninfo >/dev/null 2>&1; then
+    timeout 60 vulkaninfo --summary 2>&1 | head -22 | sed 's/^/  /'
+else
+    printf '  vulkaninfo is not installed:  sudo pacman -S vulkan-tools\n'
+fi
+
+section "4. Wine's view of these libraries"
+printf '  wine version : %s\n' "$(wine --version 2>/dev/null || echo 'wine not found')"
+for lib in libva.so.2 libva-drm.so.2 libdrm.so.2 libvulkan.so.1; do
+    printf '  %-18s host: %s\n' "$lib" "$(ldconfig -p 2>/dev/null | awk -v l="$lib" '$1==l {print $NF; exit}')"
+done
+printf '\n  Wine loads the host Vulkan library at runtime, but it does NOT use\n'
+printf '  VA-API: wined3d implements ID3D11VideoDevice on Vulkan Video only.\n'
+printf '  A passing section 2 therefore only proves the hardware works.\n'
+printf '  What decides hardware decoding for the client is whether the ICD\n'
+printf '  exposes VK_KHR_video_decode_h264 -- see:  uuyc-wine-vkvideo\n'
+
+section "5. what the client reported last time"
+prefix="${UUYC_WINE_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/uuyc-wine/wineprefix}"
+sentry="$prefix/drive_c/Program Files/Netease/GameViewer/log/client/Sentry"
+if [[ -d $sentry ]]; then
+    [[ -r $sentry/last_crash ]] && \
+        printf '  last crash : %s\n' "$(tr -d '\0' <"$sentry/last_crash")"
+    record=$(grep -rhoE '\{"init":true[^}]*\}' "$sentry" 2>/dev/null | tail -1)
+    [[ -n $record ]] && printf '  session    : %s\n' "$record"
+    printf '  crash dumps: %s\n' "$(find "$sentry/reports" -name '*.dmp' 2>/dev/null | wc -l)"
+else
+    printf '  no client Sentry directory\n'
+fi
+
+section "interpretation"
+cat <<'EOF'
+  section 2 lists "VAProfileH264..." entries  -> the GPU can decode H.264, but
+                                                 this says nothing about Wine.
+                                                 Run uuyc-wine-vkvideo next.
+  section 2 fails with vaGetDriverNames       -> the render node is not usable
+                                                 for this process, even if ls
+                                                 says it is readable.
+  section 3 lists an Intel device             -> renderer=vulkan can use real
+                                                 hardware; no device means it
+                                                 silently falls back.
+EOF

@@ -1,0 +1,10 @@
+
+==================== uuyc-vdshim attached ====================
+  exe=C:\Program Files\Netease\GameViewer\bin\GameViewerServer.exe
+  cwd=C:\Program Files\Netease\GameViewer\bin
+  quiet=0 profiles=2 patch_formats=1
+
+==================== uuyc-vdshim attached ====================
+  exe=C:\Program Files\Netease\GameViewer\bin\GameViewer.exe
+  cwd=C:\Program Files\Netease\GameViewer
+  quiet=0 profiles=2 patch_formats=1

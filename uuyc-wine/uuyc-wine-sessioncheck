@@ -1,0 +1,151 @@
+#!/usr/bin/bash
+# uuyc-wine-sessioncheck -- collect the decisive evidence after a session attempt.
+#
+# Every round of diagnosing "the client cannot connect" needed the same handful of
+# facts, gathered by hand each time. This collects them in one run and prints a
+# verdict, so a session attempt can be judged in seconds.
+#
+# What it answers, in order:
+#   1. is the client still alive, or did it crash?
+#   2. did a new crash dump appear?  (the client swallows its own faults, so
+#      Wine's log says "no unhandled exception" even when the process died)
+#   3. did the video decoder ever get created?  (the hardware-decode milestone)
+#   4. did the session reach the network?  (a media stream needs UDP)
+#   5. what is the WebView2 showing?  (window titles identify the page)
+#
+#   uuyc-wine-sessioncheck                 # since the newest client log
+#   uuyc-wine-sessioncheck 2026-09-18 03:45  # since an explicit timestamp
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+prefix="${UUYC_WINE_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/uuyc-wine/wineprefix}"
+root="$prefix/drive_c/Program Files/Netease/GameViewer"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine"
+logdir="$root/log/client/log"
+reports="$root/log/client/Sentry/reports"
+shimlog="$root/bin/uuyc-vdshim.log"
+uictl="${UUYC_UICTL:-/usr/share/uuyc-wine/uictl/uuyc-uictl.exe}"
+wine="${UUYC_WINE_BIN:-/usr/bin/wine}"
+
+section() { printf '\n===== %s =====\n' "$1"; }
+ok=$'\033[32mok\033[0m'
+bad=$'\033[31mFAIL\033[0m'
+warn=$'\033[33mnote\033[0m'
+
+# Default "since": the timestamp of the newest client log, i.e. the last launch.
+since="${*:-}"
+if [[ -z $since ]]; then
+    newest=$(ls -1t "$logdir"/*.slog 2>/dev/null | head -1)
+    if [[ -n $newest ]]; then
+        since=$(date -r "$newest" '+%Y-%m-%d %H:%M:%S')
+    else
+        since=$(date -d '-15 minutes' '+%Y-%m-%d %H:%M:%S')
+    fi
+fi
+printf 'wine     : %s (%s)\n' "$wine" "$("$wine" --version 2>/dev/null || echo '?')"
+printf 'prefix   : %s\n' "$prefix"
+printf 'since    : %s\n' "$since"
+
+# --------------------------------------------------------------------------
+section "1. is the client alive?"
+
+alive=$(ps -eo args 2>/dev/null | grep -cE 'GameViewer\.exe|GameViewerServer\.exe' || true)
+printf '  GameViewer.exe / GameViewerServer.exe processes: %s\n' "${alive:-0}"
+if [[ ${alive:-0} -gt 0 ]]; then
+    printf '  %s the client is running\n' "$ok"
+else
+    printf '  %s no client process -- it exited or crashed\n' "$bad"
+fi
+ps -eo pid,etime,args 2>/dev/null | grep -E 'GameViewer(Server)?\.exe' \
+    | awk '{printf "    pid %-7s up %-10s %s\n", $1, $2, substr($0, index($0,$3), 60)}' | head -6
+
+# --------------------------------------------------------------------------
+section "2. did it crash?"
+
+dumps=()
+if [[ -d $reports ]]; then
+    mapfile -t dumps < <(find "$reports" -name '*.dmp' -newermt "$since" 2>/dev/null)
+    if ((${#dumps[@]})); then
+        printf '  %s %d new crash dump(s)\n' "$bad" "${#dumps[@]}"
+        for d in "${dumps[@]}"; do printf '    %s\n' "$(basename "$d")"; done
+        printf '\n  Inspect one with:  uuyc-wine-dumpinfo "%s"\n' "${dumps[0]}"
+    else
+        printf '  %s no new crash dump\n' "$ok"
+    fi
+    printf '  last_crash marker: %s\n' "$(tr -d '\0' <"$reports/../last_crash" 2>/dev/null || echo '-')"
+else
+    printf '  (no Sentry reports directory)\n'
+fi
+
+# --------------------------------------------------------------------------
+section "3. did the video decoder get created?"
+
+if [[ -r $shimlog ]]; then
+    printf '  shim log      : %s bytes, modified %s\n' \
+        "$(stat -c%s "$shimlog")" "$(stat -c%y "$shimlog" | cut -d. -f1)"
+    made=$(grep -ac 'CreateVideoDecoder' "$shimlog" 2>/dev/null) || true
+    printf '  CreateVideoDecoder calls: %s\n' "${made:-0}"
+    if [[ ${made:-0} -gt 0 ]]; then
+        printf '  %s the client created a hardware decoder\n' "$ok"
+        grep -a 'CreateVideoDecoder' "$shimlog" | tail -3 | sed 's/^/    /'
+    else
+        printf '  %s never reached CreateVideoDecoder\n' "$warn"
+        printf '      profile/config queries so far:\n'
+        grep -acE 'GetVideoDecoderProfileCount' "$shimlog" 2>/dev/null | sed 's/^/        profile queries: /'
+        grep -acE 'GetVideoDecoderConfigCount' "$shimlog" 2>/dev/null | sed 's/^/        config queries : /'
+    fi
+else
+    printf '  %s no shim log: the d3d11 shim is not installed or never loaded\n' "$warn"
+    printf '      install it with:  uuyc-wine-vdshim install\n'
+fi
+
+# --------------------------------------------------------------------------
+section "4. did the session reach the network?"
+
+udp=$(ss -unp 2>/dev/null | grep -cE 'GameViewer|wine' || true)
+tcp=$(ss -tnp 2>/dev/null | grep -cE 'GameViewer|wine' || true)
+printf '  TCP sockets: %s    UDP sockets: %s\n' "${tcp:-0}" "${udp:-0}"
+if [[ ${udp:-0} -gt 0 ]]; then
+    printf '  %s a UDP flow exists -- consistent with a media stream\n' "$ok"
+else
+    printf '  %s no UDP: the video stream never started (control channel only)\n' "$warn"
+fi
+ss -tnp 2>/dev/null | grep -E 'GameViewer|wine' | awk '{print "    "$5}' | sort -u | head -6
+
+# --------------------------------------------------------------------------
+section "5. what is the WebView2 showing?"
+
+if [[ -x $uictl ]]; then
+    # The titled windows are children of the Qt shell, so walk the tree rather
+    # than listing top-level windows: the page titles are the useful signal.
+    out=$(WINEPREFIX="$prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree=d;mshtml=d" \
+          timeout 120 "$wine" "$uictl" tree UU 2>/dev/null \
+          | grep -E 'Chrome_WidgetWin_1|Chrome_RenderWidgetHostHWND|Qt51512QWindowIcon' \
+          | grep -v 'title=$' | sed 's/^ *//' | sort -u || true)
+    if [[ -n $out ]]; then
+        printf '%s\n' "$out" | sed 's/^/  /'
+        printf '\n  Read the titles: "网易UU远程" is the app shell; "云设备骨架屏" is the\n'
+        printf '  bundled loading placeholder -- it stays visible while the device list\n'
+        printf '  cannot be fetched, which is what an absent login looks like.\n'
+    else
+        printf '  (no client windows found)\n'
+    fi
+else
+    printf '  (uictl not available at %s)\n' "$uictl"
+fi
+
+# --------------------------------------------------------------------------
+section "verdict"
+
+if [[ ${alive:-0} -gt 0 && ${#dumps[@]} -eq 0 ]]; then
+    printf '  The client survived. If no UDP flow exists and the window still shows\n'
+    printf '  the loading placeholder, the blocker is authentication, not rendering:\n\n'
+    printf '    uuToken/gameId empty  ->  device list empty  ->  nothing to connect to\n\n'
+    printf '  Check the app token:\n'
+    printf '    grep -a "uuToken" %s | head -2\n' "$state/crash-debug.log"
+    printf '  Check the web session cookie:\n'
+    printf '    sqlite3 "%s/drive_c/users/*/AppData/Local/GameViewer/webviewcache/EBWebView/Default/Network/Cookies" \\\n' "$prefix"
+    printf '        "select name,length(value) from cookies"\n'
+fi

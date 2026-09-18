@@ -1,0 +1,232 @@
+#!/usr/bin/bash
+# uuyc-wine-vkvideo -- is Vulkan Video decode exposed on this GPU, and does
+# ANV_DEBUG=video-decode change that?
+#
+# Why this exists
+# ---------------
+# Wine's Direct3D 11 video decoder has exactly one hardware backend: Vulkan
+# Video (VK_KHR_video_queue + VK_KHR_video_decode_h264/...). It never talks to
+# VA-API. So "can this machine hardware-decode the UU Remote stream" reduces to
+# "does the ICD expose the Vulkan Video decode extensions to this process".
+#
+# AMD's RADV exposes them unconditionally. Intel's ANV does NOT: Mesa gates them
+# behind the ANV_DEBUG=video-decode debug flag.
+#
+#   src/intel/vulkan/anv_physical_device.c:
+#     const bool video_decode_enabled = ANV_DEBUG(VIDEO_DECODE);
+#     .KHR_video_decode_h264 = VIDEO_CODEC_H264DEC && video_decode_enabled,
+#     .KHR_video_decode_h265 = VIDEO_CODEC_H265DEC && video_decode_enabled && device->has_huc,
+#
+#   src/intel/vulkan/anv_instance.c:
+#     { "video-decode", ANV_DEBUG_VIDEO_DECODE },   // note: hyphen, not underscore
+#
+# Two consequences worth knowing:
+#   * H.264 decode needs NO HuC firmware (no has_huc term). HuC is only required
+#     for H.265 (HEVC) and VP9 on this driver. So a Gen9.5 part without HuC can
+#     still do H.264 in hardware -- the flag is the only gate.
+#   * The flag name is `video-decode`. `VIDEO_DECODE`, `video_decode` and
+#     `h264dec` are all silently ignored by parse_debug_string().
+#
+#   uuyc-wine-vkvideo          # run in the same terminal you start uuyc-wine in
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+section() { printf '\n===== %s =====\n' "$1"; }
+ok=$'\033[32mok\033[0m'
+bad=$'\033[31mFAIL\033[0m'
+warn=$'\033[33mnote\033[0m'
+
+probe="${UUYC_VKVIDEO_PROBE:-/usr/share/uuyc-wine/vkvideo/uuyc-vkvideo}"
+[[ -x $probe ]] || probe=$(command -v uuyc-vkvideo 2>/dev/null)
+if [[ ! -x $probe ]]; then
+    printf '%s probe binary not found at %s\n' "$bad" "${UUYC_VKVIDEO_PROBE:-/usr/share/uuyc-wine/vkvideo/uuyc-vkvideo}" >&2
+    exit 1
+fi
+
+# Run the probe and keep its exit status, so a crash is never mistaken for
+# "the extension is not exposed".
+run_probe() {
+    local out rc
+    out=$(timeout 60 "$probe" 2>&1); rc=$?
+    printf '%s\n' "$out"
+    printf '\n__RC__=%d\n' "$rc"
+}
+
+# --------------------------------------------------------------------------
+section "1. what the ICD advertises (baseline)"
+
+raw_plain=$(run_probe)
+rc_plain=$(sed -n 's/^__RC__=//p' <<<"$raw_plain")
+out_plain=$(grep -v '^__RC__=' <<<"$raw_plain")
+printf '%s\n' "$out_plain" | sed 's/^/  /'
+
+# If the plain probe itself died, stop here: comparing two broken runs is
+# meaningless, and reporting "not exposed" would be a false negative.
+if [[ $rc_plain -ge 128 || $rc_plain -eq 5 ]]; then
+    printf '\n  %s the probe terminated abnormally (exit %s).\n' "$bad" "$rc_plain"
+    cat <<'EOF'
+
+  This is a defect in the probe, not a property of your GPU -- do NOT read the
+  next section as "Vulkan Video is unavailable". Please report the output above.
+EOF
+    exit 1
+fi
+
+# Did the driver die inside the H.264 capability query? The probe prints the
+# whole extension list first, so if that list is present but the query line is
+# not, the crash happened inside vkGetPhysicalDeviceVideoCapabilitiesKHR --
+# which is exactly the call wined3d makes. That is a driver bug, not a probe bug,
+# and it is reported as such instead of as a generic "inconclusive".
+classify_crash() {  # $1=probe output  -> echoes "query" | "exts" | "early"
+    if grep -q 'H.264 High/Progressive/NV12 query' <<<"$1"; then printf 'late';
+    elif grep -q 'device extension count' <<<"$1";       then printf 'query';
+    elif grep -q 'dev\[0\]' <<<"$1";                    then printf 'exts';
+    else printf 'early'; fi
+}
+
+# --------------------------------------------------------------------------
+section "2. the same probe with ANV_DEBUG=video-decode"
+
+raw_flag=$(ANV_DEBUG=video-decode run_probe)
+rc_flag=$(sed -n 's/^__RC__=//p' <<<"$raw_flag")
+out_flag=$(grep -v '^__RC__=' <<<"$raw_flag")
+printf '%s\n' "$out_flag" | sed 's/^/  /'
+
+# --------------------------------------------------------------------------
+section "3. verdict"
+
+h264_plain=$(grep -c '^  VK_KHR_video_decode_h264 *YES' <<<"$out_plain" || true)
+h264_flag=$(grep -c '^  VK_KHR_video_decode_h264 *YES' <<<"$out_flag" || true)
+queue_flag=$(grep -c '^  VK_KHR_video_queue *YES' <<<"$out_flag" || true)
+caps_ok=$(grep -c 'H.264 High/Progressive/NV12 query *: SUPPORTED' <<<"$out_flag" || true)
+no_dev=$(grep -c 'NO VULKAN DEVICE VISIBLE\|ENUMERATION FAILED' <<<"$out_flag" || true)
+abi_bad=$(grep -c 'ABI CHECK FAILED' <<<"$out_plain$out_flag" || true)
+crashed=$(grep -c 'stack smashing\|core dumped\|Segmentation fault' <<<"$out_plain$out_flag" || true)
+
+if ((abi_bad || crashed)); then
+    printf '  %s inconclusive: the probe hit an internal error, so nothing here says\n' "$bad"
+    printf '      anything about your GPU. Report the output above.\n'
+elif ((rc_flag >= 128 || rc_flag == 5)); then
+    where=$(classify_crash "$out_flag")
+    if [[ $where == query ]]; then
+        printf '  %s the probe died inside the H.264 capability query.\n' "$bad"
+        cat <<'EOF'
+
+      The extensions ARE exposed (section 2 lists them), so gate 1 of wined3d's
+      two gates passes, but the process died while asking for capabilities.
+
+      This is a defect in this probe, not in your driver. Experience with this
+      tool says the usual cause is a wrong VkStructureType in the hand-written
+      struct chain: ANV walks pCapabilities->pNext with vk_find_struct() and
+      then writes through the pointer it gets, so a struct the driver cannot
+      recognise becomes a NULL dereference inside libvulkan_intel.so.
+
+      Verify the probe before blaming the GPU:
+
+          KHDR_DIR=<Vulkan-Headers include> check-abi.sh
+
+      That cross-checks every hardcoded constant against the official headers.
+      Do NOT report this as a Mesa/ANV bug.
+EOF
+    elif [[ $where == exts ]]; then
+        printf '  %s inconclusive: the driver crashed before the query, while the\n' "$warn"
+        printf '      extension list was being read. Please report the output above.\n'
+    else
+        printf '  %s inconclusive: the probe exited abnormally (%s) before it could\n' "$bad" "$rc_flag"
+        printf '      report anything about this device. Please report the output above.\n'
+    fi
+elif ((no_dev)); then
+    printf '  %s inconclusive: the probe saw no Vulkan device at all, so neither run\n' "$warn"
+    printf '      could test the extensions. Re-run where /dev/dri is visible.\n'
+elif ((h264_flag && caps_ok)); then
+    printf '  %s both gates that wined3d checks are satisfied with ANV_DEBUG=video-decode:\n' "$ok"
+    printf '        1. VK_KHR_video_queue + VK_KHR_video_decode_h264 exposed\n'
+    printf '        2. vkGetPhysicalDeviceVideoCapabilitiesKHR accepts H.264\n'
+    printf '           High profile / progressive / NV12\n'
+    printf '      wined3d_decoder_vk_is_h264_decode_supported() therefore returns true,\n'
+    printf '      and ID3D11VideoDevice::GetVideoDecoderProfileCount will report\n'
+    printf '      DXVA_ModeH264_VLD_NoFGT instead of 0.\n\n'
+    printf '      Start the client like this:\n\n'
+    printf '        uuyc-wine --hw-decode\n'
+elif ((h264_flag)); then
+    printf '  %s VK_KHR_video_decode_h264 is exposed, but the capability query did not\n' "$warn"
+    printf '      report SUPPORTED. wined3d would still return 0 profiles. Capture the\n'
+    printf '      section-2 output.\n'
+elif ((h264_plain)); then
+    printf '  %s VK_KHR_video_decode_h264 is already available without any flag.\n' "$ok"
+    printf '      The hardware path is open; the failure is further down (wined3d).\n'
+elif ((queue_flag)); then
+    printf '  %s VK_KHR_video_queue is exposed but H.264 is not.\n' "$warn"
+    printf '      Video is enabled in ANV, but the codec profile is not offered for\n'
+    printf '      this device. Capture the section-2 output and report it.\n'
+else
+    printf '  %s VK_KHR_video_decode_h264 is not exposed either way.\n' "$bad"
+    printf '      Check the flag actually reached the driver:\n\n'
+    printf '        ANV_DEBUG=video-decode vulkaninfo | grep -i video\n\n'
+    printf '      If that is also empty, this Mesa build has no Intel video code.\n'
+fi
+
+# --------------------------------------------------------------------------
+section "4. what Wine does with it"
+
+printf '  Wine implements ID3D11VideoDevice on top of Vulkan Video only.\n'
+printf '  There is no VA-API path in wined3d. Installed host VA-API:\n\n'
+printf '    intel-media-driver (iHD) : %s   <- drives VAProfileH264*, unused by Wine\n' \
+    "$(pacman -Q intel-media-driver 2>/dev/null | awk '{print $2}' || echo 'not installed')"
+printf '    libva                    : %s\n' \
+    "$(pacman -Q libva 2>/dev/null | awk '{print $2}' || echo 'not installed')"
+printf '\n  So a working vainfo proves the *hardware* decodes H.264, but it does not\n'
+printf '  by itself give the Wine client a decoder. Vulkan Video is the bridge.\n'
+
+# --------------------------------------------------------------------------
+section "5. HuC / GuC (only matters for H.265 and VP9)"
+
+printf '  anv_physical_device.c gates H.265 on device->has_huc; H.264 has no such\n'
+printf '  gate. has_huc comes from intel_gem_supports_huc(), which is false unless\n'
+printf '  the firmware is loaded. On Gen9/9.5 i915 does NOT load HuC by itself; it\n'
+printf '  needs i915.enable_guc=2 (or 3) on the kernel command line.\n\n'
+printf '  current kernel cmdline : %s\n' "$(tr -s ' ' < /proc/cmdline)"
+if grep -qw 'i915.enable_guc=[23]' /proc/cmdline; then
+    printf '  %s enable_guc is set; HuC should be up (check dmesg for "HuC" lines).\n' "$ok"
+else
+    printf '  %s enable_guc is not set, so HuC is almost certainly not loaded and\n' "$warn"
+    printf '      H.265/VP9 hardware decode will stay unavailable. H.264 is unaffected.\n'
+fi
+if [[ -r /sys/module/i915/parameters/enable_guc ]]; then
+    printf '  /sys/module/i915/parameters/enable_guc = %s\n' \
+        "$(cat /sys/module/i915/parameters/enable_guc)"
+else
+    printf '  /sys/module/i915/parameters/enable_guc unreadable as %s (expected)\n' "$(id -un)"
+fi
+if command -v dmesg >/dev/null 2>&1; then
+    if dmesg 2>/dev/null | grep -qi 'huc'; then
+        printf '\n  dmesg mentions HuC:\n'
+        dmesg 2>/dev/null | grep -i 'huc\|guc' | tail -6 | sed 's/^/    /'
+    else
+        printf '\n  dmesg mentions no HuC/GuC (or dmesg is restricted).\n'
+    fi
+fi
+
+# --------------------------------------------------------------------------
+section "interpretation"
+cat <<'EOF'
+  Section 3 says H.264 IS available with ANV_DEBUG=video-decode
+      -> the GPU can decode the stream in hardware. Launch with
+         uuyc-wine --hw-decode. If the session still fails, the remaining
+         suspect is wined3d's DXGI format handling, not the driver.
+
+  Section 3 says VK_KHR_video_queue yes but h264 no
+      -> video is enabled in ANV but the codec profile is not offered for this
+         device. Capture the section-2 output and report it.
+
+  Section 3 says not exposed either way
+      -> the flag did not reach the driver, it was misspelled, or this Mesa
+         build has no video code. Cross-check with:
+             ANV_DEBUG=video-decode vulkaninfo | grep -i video
+
+  Section 3 says inconclusive
+      -> the probe could not test anything (no device, or an internal error).
+         That is not evidence about the GPU.
+EOF

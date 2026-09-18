@@ -1,0 +1,242 @@
+#!/usr/bin/bash
+# uuyc-android -- run the 网易UU远程 Android client (com.netease.uuremote) on
+# Arch Linux through Waydroid.
+#
+# Why Waydroid: upstream publishes no Linux client, and the Android APK is the
+# build that runs on a normal Linux desktop. There is no way to relink the APK
+# against glibc -- its streamer, input and database code all live in
+# arm64-v8a-only .so files -- so an Android container is the supported route.
+#
+# The launcher checks the container prerequisites, installs the packaged APK on
+# first use, re-installs it whenever the APK on disk changes, enables the ARM
+# translation layer when the host is x86_64, and then starts the app.
+#
+# SPDX-License-Identifier: 0BSD
+
+set -euo pipefail
+
+readonly app_title="网易UU远程 (Android)"
+readonly share_dir="${UUYC_ANDROID_SHARE_DIR:-/usr/share/uuyc-android}"
+readonly apk="$share_dir/com.netease.uuremote.apk"
+readonly package_name="com.netease.uuremote"
+readonly expected_abis="arm64-v8a"
+readonly state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-android"
+readonly stamp="$state_dir/installed-apk.sha256"
+readonly log="$state_dir/waydroid.log"
+
+readonly waydroid=/usr/bin/waydroid
+readonly imagemounter=/usr/bin/waydroid-image
+
+usage() {
+    cat <<'EOF'
+Usage: uuyc-android [OPTION]
+
+Options:
+  --status       Report container prerequisites and the installed app version
+  --install      Install or refresh the APK inside Waydroid, then exit
+  --session      Start the Waydroid session in the foreground (Ctrl+C to stop)
+  --clear-data   Clear the app's Android data (removes login state)
+  -h, --help     Show this help
+
+Environment:
+  UUYC_ANDROID_SHARE_DIR  read package data from another directory
+  UUYC_ANDROID_SESSION    set to 0 to skip the automatic session start
+EOF
+}
+
+die() {
+    printf 'uuyc-android: %s\n' "$1" >&2
+    exit 1
+}
+
+info() {
+    printf '%s\n' "$1"
+}
+
+# ------------------------------------------------------------------ checks ---
+waydroid_running() {
+    [[ -x $waydroid ]] || return 1
+    timeout 15 waydroid status 2>/dev/null | grep -q 'Session:[[:space:]]*RUNNING'
+}
+
+container_image_ready() {
+    [[ -f /var/lib/waydroid/waydroid.cfg ]] || return 1
+    grep -q '^\[waydroid\]' /var/lib/waydroid/waydroid.cfg
+}
+
+binder_ready() {
+    [[ -e /dev/binder ]] || [[ -e /dev/binderfs/binder ]] || \
+        lsmod | grep -qE '^(binder_linux|ashmem_linux|binder)\b'
+}
+
+kvm_ready() {
+    [[ -r /dev/kvm && -w /dev/kvm ]]
+}
+
+host_arch() {
+    uname -m
+}
+
+needs_arm_translation() {
+    [[ $(host_arch) == x86_64 ]]
+}
+
+arm_translation_enabled() {
+    [[ -f /var/lib/waydroid/waydroid_base.prop ]] || return 1
+    grep -qE '^ro\.(native\.bridge|dalvik\.vm\.nativebridge)=' /var/lib/waydroid/waydroid_base.prop
+}
+
+session_is_wayland() {
+    [[ ${XDG_SESSION_TYPE:-} == wayland || -n ${WAYLAND_DISPLAY:-} ]]
+}
+
+require_android_session() {
+    if ! command -v waydroid >/dev/null 2>&1; then
+        die "waydroid is not installed; install it first: sudo pacman -S waydroid"
+    fi
+
+    if ! session_is_wayland; then
+        die "Waydroid needs a Wayland session; log in to a Wayland session (XDG_SESSION_TYPE=wayland)"
+    fi
+
+    if ! binder_ready; then
+        die "the binder kernel module is not available; load it with: sudo modprobe binder_linux"
+    fi
+
+    if ! container_image_ready; then
+        info "Waydroid has no Android image yet. Run:"
+        info "  sudo waydroid init -s GAPPS"
+        die "the Waydroid Android image is missing"
+    fi
+
+    if needs_arm_translation && ! arm_translation_enabled; then
+        cat >&2 <<EOF
+uuyc-android: this APK ships only $expected_abis native code, so an x86_64 host
+              needs Waydroid's ARM translation layer. Enable it with:
+  sudo uuyc-android-arm  (installs libndk/libhoudini and sets the properties)
+Then restart the session: waydroid session stop
+EOF
+        exit 1
+    fi
+
+    if ! waydroid_running && [[ ${UUYC_ANDROID_SESSION:-1} == 1 ]]; then
+        info "Starting the Waydroid session ..."
+        mkdir -p "$state_dir"
+        nohup waydroid session start >>"$log" 2>&1 &
+        for _ in $(seq 1 120); do
+            waydroid_running && break
+            sleep 0.5
+        done
+        waydroid_running || die "the Waydroid session did not start, see $log"
+    fi
+}
+
+# ------------------------------------------------------------- app install ---
+apk_sha256() {
+    sha256sum "$apk" | cut -d' ' -f1
+}
+
+app_installed() {
+    timeout 30 waydroid shell -- pm path "$package_name" 2>/dev/null | grep -q '^package:'
+}
+
+installed_version() {
+    timeout 30 waydroid shell -- dumpsys package "$package_name" 2>/dev/null | \
+        sed -n 's/.*versionName=\([^ ]*\).*/\1/p' | head -1
+}
+
+install_apk() {
+    mkdir -p "$state_dir"
+    info "Installing $package_name into Waydroid ..."
+    # -r replaces an existing install and keeps the application's data.
+    timeout 900 waydroid app install -r "$apk" >>"$log" 2>&1 || \
+        die "APK installation failed, see $log"
+    apk_sha256 >"$stamp"
+}
+
+resolve_launcher_activity() {
+    timeout 30 waydroid shell -- cmd package resolve-activity --brief \
+        -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+        "$package_name" 2>/dev/null | tail -1 | tr -d '\r'
+}
+
+# ------------------------------------------------------------------ actions ---
+status() {
+    info "host architecture : $(host_arch)"
+    info "waydroid installed: $(command -v waydroid >/dev/null 2>&1 && echo yes || echo no)"
+    info "session           : $(waydroid_running && echo RUNNING || echo stopped)"
+    info "binder module     : $(binder_ready && echo present || echo missing)"
+    info "kvm available     : $(kvm_ready && echo yes || echo no)"
+    info "image configured  : $(container_image_ready && echo yes || echo no)"
+    info "arm translation   : $(needs_arm_translation && { arm_translation_enabled && echo enabled || echo missing; } || echo 'not needed')"
+    info "apk on disk       : $apk"
+    if waydroid_running; then
+        info "app installed     : $(app_installed && echo yes || echo no)"
+        info "installed version : $(installed_version || echo unknown)"
+        info "launcher activity : $(resolve_launcher_activity || echo unknown)"
+    fi
+}
+
+install_only() {
+    require_android_session
+    if app_installed && [[ -r $stamp && $(<"$stamp") == "$(apk_sha256)" ]]; then
+        info "$package_name is already installed and up to date."
+    else
+        install_apk
+    fi
+}
+
+launch() {
+    require_android_session
+    if ! app_installed; then
+        install_apk
+    elif [[ ! -r $stamp || $(<"$stamp") != "$(apk_sha256)" ]]; then
+        info "The packaged APK changed, refreshing the Waydroid install."
+        install_apk
+    fi
+
+    local activity
+    activity=$(resolve_launcher_activity || true)
+    if [[ -n $activity && $activity == "$package_name/"* ]]; then
+        info "Starting $activity"
+        waydroid app launch "$package_name" 2>/dev/null || \
+            timeout 60 waydroid shell -- am start -n "$activity" || \
+            die "the application did not start"
+    else
+        # Fall back to the launcher intent, which lets Android pick the activity.
+        timeout 60 waydroid shell -- monkey -p "$package_name" \
+            -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || \
+            die "the application did not start (no launcher activity found)"
+    fi
+}
+
+# --------------------------------------------------------------------- main ---
+action=launch
+while (($# > 0)); do
+    case $1 in
+        --status) action=status ;;
+        --install) action=install_only ;;
+        --session) action=session ;;
+        --clear-data) action=clear_data ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage; die "unknown option: $1" ;;
+    esac
+    shift
+done
+
+[[ -r $apk ]] || die "missing package data: $apk"
+
+case $action in
+    status) status ;;
+    install_only) install_only ;;
+    session)
+        require_android_session
+        exec waydroid session start
+        ;;
+    clear_data)
+        require_android_session
+        timeout 60 waydroid shell -- pm clear "$package_name" || die "failed to clear app data"
+        info "Application data cleared."
+        ;;
+    launch) launch ;;
+esac

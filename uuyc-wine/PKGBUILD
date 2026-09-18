@@ -1,0 +1,286 @@
+# Maintainer: Arch Linux local adaptation of the NetEase UU Remote (网易UU远程)
+# Windows client. Derived from the 0BSD-licensed uuyc-wine recipe by the
+# uuyc-wine AUR contributors, retargeted to upstream 4.40.1 and a local
+# installer file.
+#
+# The upstream product ships no Linux build. This package installs the official
+# Windows installer into a private Wine prefix on first launch and applies the
+# compatibility workarounds UU Remote needs on Arch Linux.
+
+pkgname=uuyc-wine
+pkgver=4.40.1
+pkgrel=21
+pkgdesc='NetEase UU Remote (网易UU远程) Windows client on Arch Linux, via a managed Wine prefix'
+arch=('x86_64')
+url='https://uuyc.163.com/'
+license=('LicenseRef-UU-Remote-EULA' '0BSD')
+depends=('wine>=11.0' 'hicolor-icon-theme' 'procps-ng' 'util-linux' 'diffutils' 'grep' 'pacman')
+makedepends=('binutils' 'gcc' '7zip' 'wine')
+optdepends=('libnotify: desktop notifications while the prefix is prepared')
+options=('!strip' '!debug')
+install="$pkgname.install"
+_installer='uuyc-installer.exe'
+_installer_dir="${startdir}/local"
+
+# The installer is vendor software, so it is referenced from the package
+# directory instead of a checksummed download. Place the official file at
+# local/uuyc-installer.exe before building (see README.md).
+source=(
+  "$_installer::file://$_installer_dir/$_installer"
+  "wevtapi.S::file://$_installer_dir/../wevtapi-shim/wevtapi.S"
+  "wevtapi.def::file://$_installer_dir/../wevtapi-shim/wevtapi.def"
+  'uuyc-wine'
+  'uuyc-wine-doctor'
+  'uuyc-wine-gpu'
+  'uuyc-wine-hwdecode'
+  'uuyc-wine-crashlog'
+  'uuyc-wine-d3dprobe'
+  'uuyc-wine-vkvideo'
+  'uuyc-wine-dumpinfo'
+  'uuyc-wine-sessioncheck'
+  "shshim-source.c::file://$_installer_dir/../support/shshim/uuyc-shshim.c"
+  "shshim-forwarders.c::file://$_installer_dir/../support/shshim/uuyc-shshim-forwarders.c"
+  "shshim-forwarders.S::file://$_installer_dir/../support/shshim/uuyc-shshim-forwarders.S"
+  "shshim-forwarders.h::file://$_installer_dir/../support/shshim/uuyc-shshim-forwarders.h"
+  "shshim-forwarders.def::file://$_installer_dir/../support/shshim/uuyc-shshim-forwarders.def"
+  "shshim-test.c::file://$_installer_dir/../support/shshim/testshshim.c"
+  "shshim-test.exe::file://$_installer_dir/../support/shshim/testshshim.exe"
+  "shshim.dll::file://$_installer_dir/../support/shshim/uuyc-shshim.dll"
+  "shshim-deploy.sh::file://$_installer_dir/../support/shshim/deploy.sh"
+  "shshim-gen-forwarders.sh::file://$_installer_dir/../support/vdshim/gen-forwarders.sh"
+  "uictl-source.c::file://$_installer_dir/../support/uictl/uuyc-uictl.c"
+  "uictl.exe::file://$_installer_dir/../support/uictl/uuyc-uictl.exe"
+  "uictl-README.md::file://$_installer_dir/../support/uictl/README.md"
+  "bridge-js::file://$_installer_dir/../support/bridge/uuycbridge.js"
+  "bridge-README.md::file://$_installer_dir/../support/bridge/README.md"
+  "winepatch.sh::file://$_installer_dir/../support/winepatch/build-patched-wine.sh"
+  "winepatch-shell32.patch::file://$_installer_dir/../support/winepatch/0001-shell32-init-window-prop-store-out-params.patch"
+  "uuyc-d3dprobe.c::file://$_installer_dir/../support/d3dprobe/uuyc-d3dprobe.c"
+  "uuyc-d3dprobe.exe::file://$_installer_dir/../support/d3dprobe/uuyc-d3dprobe.exe"
+  "d3dprobe-README.md::file://$_installer_dir/../support/d3dprobe/README.md"
+  "vkvideo-probe.c::file://$_installer_dir/../support/vkvideo/uuyc-vkvideo.c"
+  "check-abi.sh::file://$_installer_dir/../support/vkvideo/check-abi.sh"
+  'uuyc-wine-vdshim'
+  "vdshim.dll::file://$_installer_dir/../support/vdshim/uuyc-vdshim.dll"
+  "vdshim-deploy.sh::file://$_installer_dir/../support/vdshim/deploy.sh"
+  "vdshim-gen-forwarders.sh::file://$_installer_dir/../support/vdshim/gen-forwarders.sh"
+  "vdshim-source.c::file://$_installer_dir/../support/vdshim/uuyc-vdshim.c"
+  "vdshim-iathook.c::file://$_installer_dir/../support/vdshim/iathook.c"
+  "vdshim-test.c::file://$_installer_dir/../support/vdshim/testshim.c"
+  "vdshim-test.exe::file://$_installer_dir/../support/vdshim/testshim.exe"
+  'uuyc-wine.desktop'
+  'uuyc.desktop'
+  "wine-bug-propvariant.md::file://$startdir/../docs/wine-bug-propvariant.md"
+  "qwindows-fontname-crash.md::file://$startdir/../docs/qwindows-fontname-crash.md"
+  'uuyc-wine.install'
+  'LICENSE'
+)
+noextract=("$_installer")
+sha256sums=(
+  '64f918b80a99a570dd43a0ca0c8c4fac5b9b734ad6308e0f5c69bc0be6ce5167'  # uuyc-installer.exe
+  '31af5f3986439af57e503867832395f1322ede5ab6754255af68025401b5b1f7'  # wevtapi.S
+  'c56c72c159f47b1b812943cd2095a0f64d2c4972f3c7a1a7f75e994c7b52f691'  # wevtapi.def
+  'd552f0ddc9325f61c825054859fc05d61d044d4e88f88ed354d9a7311efc49c9'  # uuyc-wine
+  '8c6466d3d1476badfc23b9c9d42d3116e3b25eee04150501bb8742660334fee2'  # uuyc-wine-doctor
+  '4004601e2b7e6bef0e8cd7a5822cceb2d579fcfc296dfd4b750a439438df4e5b'  # uuyc-wine-gpu
+  '69c4cec1dcbf4d40e73f3c19ae5f208d4a4111ce821e38d3fce2e657ae46f7d8'  # uuyc-wine-hwdecode
+  '34804a3716a962c4d7a51733fe1c4c22030311f131a0f2a000db90c922c627bb'  # uuyc-wine-crashlog
+  'e6135bfc5a4b9cac3aa16797005ff8d9db08bcd3d012656e51181e5d5e9ed2eb'  # uuyc-wine-d3dprobe
+  '70dbfaa4c49a9255104956e4c1a3a3b0d32beb09f26d1c78c131642a08906a16'  # uuyc-wine-vkvideo
+  '4b049dfa628950123085d64091c80c23a03cbb644c8a8f8563aff065d2b536e8'  # uuyc-wine-dumpinfo
+  '9d18c8c3722d34b87c4c30b308f69b0fae6c891967574c4a7492326995df6b1c'  # uuyc-wine-sessioncheck
+  'a7b63f8ad7fd8da9e974919804069af9d718c59e033f112b247fc45a90cde312'  # shshim-source.c
+  'e008371a7081501782fcbe3b660925b7d1f670fbc6d2f192a5133f09b22303ff'  # shshim-forwarders.c
+  '71ea36f8b74ef989edae1f64955e2d49324b60cfc9c55f190121d966554bc0bb'  # shshim-forwarders.S
+  'f26297844011244e302ab265d11f7ea06e76fcb16d5317f81ef70c7ffad9389e'  # shshim-forwarders.h
+  '6d3ae1463e5733f8d59ff8012587b021aa8b4a430f75ac28d13e3feb8f5d070f'  # shshim-forwarders.def
+  'a239280a7e5ac14f069dc45c8699549866936149edce83722422f72e90d2c2fa'  # shshim-test.c
+  '80a6fde89253d779130e8f1aedbe1afb58c13ecb2d9369f29bb1e080bb26428d'  # shshim-test.exe
+  '01ed84de959997e78d6a839dd120423a9c5e3db9bf9e1adfdcddb2dbfbe89dcb'  # shshim.dll
+  'a5f676fa7a4bc48f853fe3cabf2b23d7ebc2dc9e797ef0552fd9bea5a30af4c0'  # shshim-deploy.sh
+  '07ed33c1f92639d3834e40a950331813a3de7f5b74c027d86f36b43520f9c8c9'  # shshim-gen-forwarders.sh
+  '56b1b6f8d247879b52d489063b20079a039bc541091a213399045cd32b504a7e'  # uictl-source.c
+  '793f18b376e566fe278d7ba9615f6427b5b01d8fdf9bce3b8c9563f67a2e0328'  # uictl.exe
+  '5312228bf8f0653b85275045061ccefc51b46a4a4f07a917f55380b593643775'  # uictl-README.md
+  '6e436b29b678329f2beab357d6210266e1023ca2bfc4d2694c12155db429fb2b'  # bridge-js
+  '33179de7ed9f69b83ba1888fdc899969b27c4e6f3a823e672ac6ab819dc3a32b'  # bridge-README.md
+  'eef553880d7ba84da944b826e77b026f68fefe22d0379ac80fb476051f1557f2'  # winepatch.sh
+  '0ee828116f0bc92e3e3229f655087d4beefac7e06109c4acb4ea410571c6af1e'  # winepatch-shell32.patch
+  'a502dc2e8e5f5f6bc646c5a2cf1fbc4b9c8c875660db710af30daa44cbb252e1'  # uuyc-d3dprobe.c
+  '8de26bb9917dafe4715ddfbc27f54e2a3133c4f6a04a372f4126e0dc5a1d1828'  # uuyc-d3dprobe.exe
+  '5b28d94c5896a26ce2c9b208112a111ee0ee7e70618daeb0486dd7c5dff8ad40'  # d3dprobe-README.md
+  '85b6be8d946684e7c32e3a8a533176734f0e7a0972dd89e31091b4443f6351f2'  # vkvideo-probe.c
+  'eec0f78811a08cc4cf5001b1c920d88075437425e9586c40ad117e22f695cf0e'  # check-abi.sh
+  '838f6d062f922f13024c87f0a8a84fdd1b35f0640dbb623fd7c20e4532d13ce0'  # uuyc-wine-vdshim
+  '4c824edef40326ef355ad0e745c2a975a43788b53128313c3dccf31d62bf1834'  # vdshim.dll
+  '4010bb4d4fc05bdf3732b7b1c114788f3c2e06e08f70b101f01ceba6f7cc2133'  # vdshim-deploy.sh
+  '07ed33c1f92639d3834e40a950331813a3de7f5b74c027d86f36b43520f9c8c9'  # vdshim-gen-forwarders.sh
+  '21b8fec5d34f12e27b3e64b234b4c23f8bd75ef55f687f62dd9734a53389f0b0'  # vdshim-source.c
+  '81b482b98c8031b7d9c7523f7bcd03e09beb46fbe4ecf7496a11dc7bd7619f17'  # vdshim-iathook.c
+  '1ff56ca63e478978716b64b06becbb674d6cccb76a8cadec39fadabb976bca90'  # vdshim-test.c
+  'c841020cc115be1a439686e7f146c012d1dfd056ab2b85cf6dd0788c56a49fc5'  # vdshim-test.exe
+  'a55bf7d10211616967119ff57f4fe82bebf0b0ad12b93f6eafd3f2f2928fa840'  # uuyc-wine.desktop
+  'dd3bde42df39ac5e5731dd2cf26296b81a5206066cadc6a67f8d812c6b941934'  # uuyc.desktop
+  '50c5b673caccc3460cfee54a95c99148cea0f13bbf9cd2a153f1b53bb5edf5f2'  # wine-bug-propvariant.md
+  '4cc2a4ae0b2c20f50728ec19c2f418459c730e1a4e990adaaa07170345cd0acd'  # qwindows-fontname-crash.md
+  '2ba7476ca2f20e10377c4a2868c4346e7ca30e64eebf299647851945d1cbc289'  # uuyc-wine.install
+  'e91389eac5bc82c8398518cc7fd04ffbcc76ed009fcbec9f951015340a9ca2b3'  # LICENSE
+)
+
+prepare() {
+  # App icon, taken straight out of the installer's PE resources.
+  rm -rf icon
+  mkdir -p icon
+  7z x -y -oicon "$srcdir/$_installer" '.rsrc/ICON/6' >/dev/null
+  [[ -f icon/.rsrc/ICON/6 ]] || { echo 'failed to extract the application icon' >&2; return 1; }
+}
+
+build() {
+  cd "$srcdir"
+
+  # Native x86-64 wevtapi.dll compatibility layer. UU Remote's
+  # GameViewerServer.exe imports wevtapi.dll; Wine's builtin implementation
+  # terminates the process in an unimplemented EvtOpenPublisherMetadata stub.
+  as --64 wevtapi.S -o wevtapi-elf.o
+  objcopy --remove-section=.note.gnu.property -O pe-x86-64 wevtapi-elf.o wevtapi-coff.o
+  ld -mi386pep --dll --no-insert-timestamp --entry=DllMain --subsystem windows \
+    -o wevtapi.dll wevtapi-coff.o wevtapi.def \
+    -L/usr/lib/wine/x86_64-windows -lkernel32
+
+  # Verify that the shim really exports what the client asks for.
+  exports=$(objdump -p wevtapi.dll)
+  for symbol in EvtClose EvtNext EvtOpenPublisherMetadata EvtQuery EvtRender; do
+    grep -qw -- "$symbol" <<<"$exports" || {
+      echo "wevtapi.dll is missing the $symbol export" >&2
+      return 1
+    }
+  done
+
+  # Native Vulkan Video capability probe. Headerless on purpose: it resolves
+  # everything through the loader with dlopen/dlsym, so it needs neither
+  # vulkan-headers nor a build-time link against libvulkan. That keeps the tool
+  # usable on machines where vulkan-tools is not installed.
+  # Guard against a stale copy shadowing support/vkvideo/uuyc-vkvideo.c: makepkg
+  # resolves a plain source filename against $startdir, so an out-of-date file
+  # there silently builds the old probe. Assert the source carries the values
+  # that were cross-checked against the official Vulkan headers.
+  grep -q 'VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_PROFILE_INFO_KHR 1000040003u' vkvideo-probe.c || {
+    echo 'vkvideo-probe.c is stale (missing the checked H.264 profile sType)' >&2
+    echo 'source must come from support/vkvideo/uuyc-vkvideo.c' >&2
+    return 1
+  }
+  grep -q 'VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR 0x00000001u' vkvideo-probe.c || {
+    echo 'vkvideo-probe.c is stale (wrong H.264 codec operation bit)' >&2
+    return 1
+  }
+
+  gcc -O2 -w -o uuyc-vkvideo vkvideo-probe.c -ldl
+  [[ -x uuyc-vkvideo ]] || { echo 'failed to build the Vulkan Video probe' >&2; return 1; }
+
+  # The launcher must stay inside the runtime path this package expects.
+  for token in '/usr/share/uuyc-wine' 'uuyc-installer.exe' 'wevtapi.dll'; do
+    grep -qF -- "$token" uuyc-wine || { echo "launcher is missing $token" >&2; return 1; }
+  done
+
+  # A PE that imports a symbol this DLL lacks fails to load, which surfaces as
+  # the whole client dying instantly. This is not theoretical: it is what
+  # "installing the shim makes the client crash" was. Assert the export table
+  # covers every name Wine's d3d11.dll provides.
+  winelib=/usr/lib/wine/x86_64-windows/d3d11.dll
+  if [[ -r $winelib ]]; then
+    have=$(objdump -p vdshim.dll | sed -n '/Ordinal\/Name Pointer/,/^$/p' | awk 'NF{print $NF}' | sort -u)
+    want=$(objdump -p "$winelib" | sed -n '/Ordinal\/Name Pointer/,/^$/p' | awk 'NF{print $NF}' | sort -u)
+    missing=$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$have") | grep -c . || true)
+    if ((missing > 0)); then
+      echo "uuyc-vdshim.dll is missing $missing export(s) that Wine's d3d11.dll provides:" >&2
+      comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$have") | sed 's/^/  /' >&2
+      echo "regenerate with support/vdshim/gen-forwarders.sh" >&2
+      return 1
+    fi
+    echo "vdshim export table: complete ($(printf '%s\n' "$have" | grep -c .) symbols)"
+    # The shim must hook Wine's device in place, never return a substitute object:
+    # a foreign `this` makes Wine read fixed offsets out of bounds (this shipped
+    # once and crashed the client in d3d11_device_GetFeatureLevel).
+    grep -q 'real->lpVtbl = patched' vdshim-source.c || {
+      echo 'vdshim no longer swaps the vtable in place -- it may be handing out a fake device' >&2
+      return 1
+    }
+    if grep -qE 'return \(ID3D11Device \*\)(dp|h);' vdshim-source.c; then
+      echo 'vdshim returns a substitute ID3D11Device -- this crashes Wine callers' >&2
+      return 1
+    fi
+    # The guard that stopped the "enter desktop" crash. qwindows.dll computes
+    # (char *)otm + otm->otmpFullName out of GetOutlineTextMetricsW and hands the
+    # result to QString::fromWCharArray as a NUL-terminated wchar_t string, so an
+    # offset Wine leaves unset becomes an unmapped pointer Qt then strlens.
+    # Without the validation the client dies ~1-3s after the click, every time.
+    grep -q 'wchar_terminated' vdshim-iathook.c || {
+      echo 'iathook.c no longer validates the fromWCharArray pointer' >&2
+      return 1
+    }
+  fi
+
+  # The diagnostics tool must keep pointing at the installed probe path and the
+  # ANV debug flag it documents.
+  for token in 'ANV_DEBUG=video-decode' 'VK_KHR_video_decode_h264'; do
+    grep -qF -- "$token" uuyc-wine-vkvideo || { echo "uuyc-wine-vkvideo is missing $token" >&2; return 1; }
+  done
+}
+
+package() {
+  install -Dm755 "$srcdir/uuyc-wine" "$pkgdir/usr/bin/uuyc-wine"
+  install -Dm755 "$srcdir/uuyc-wine-doctor" "$pkgdir/usr/bin/uuyc-wine-doctor"
+  install -Dm755 "$srcdir/uuyc-wine-gpu" "$pkgdir/usr/bin/uuyc-wine-gpu"
+  install -Dm755 "$srcdir/uuyc-wine-hwdecode" "$pkgdir/usr/bin/uuyc-wine-hwdecode"
+  install -Dm755 "$srcdir/uuyc-wine-crashlog" "$pkgdir/usr/bin/uuyc-wine-crashlog"
+  install -Dm755 "$srcdir/uuyc-wine-d3dprobe" "$pkgdir/usr/bin/uuyc-wine-d3dprobe"
+  install -Dm755 "$srcdir/uuyc-wine-vkvideo" "$pkgdir/usr/bin/uuyc-wine-vkvideo"
+  install -Dm755 "$srcdir/uuyc-wine-dumpinfo" "$pkgdir/usr/bin/uuyc-wine-dumpinfo"
+  install -Dm755 "$srcdir/uuyc-wine-sessioncheck" "$pkgdir/usr/bin/uuyc-wine-sessioncheck"
+  install -Dm755 "$srcdir/uuyc-wine-vdshim" "$pkgdir/usr/bin/uuyc-wine-vdshim"
+  install -Dm755 "$srcdir/check-abi.sh" "$pkgdir/usr/share/$pkgname/vkvideo/check-abi.sh"
+  install -Dm755 "$srcdir/vdshim.dll" "$pkgdir/usr/share/$pkgname/vdshim/uuyc-vdshim.dll"
+  install -Dm755 "$srcdir/vdshim-deploy.sh" "$pkgdir/usr/share/$pkgname/vdshim/deploy.sh"
+  install -Dm755 "$srcdir/vdshim-gen-forwarders.sh" "$pkgdir/usr/share/$pkgname/vdshim/gen-forwarders.sh"
+  install -Dm644 "$srcdir/shshim-source.c" "$pkgdir/usr/share/$pkgname/shshim/uuyc-shshim.c"
+  install -Dm644 "$srcdir/shshim-forwarders.c" "$pkgdir/usr/share/$pkgname/shshim/uuyc-shshim-forwarders.c"
+  install -Dm644 "$srcdir/shshim-forwarders.S" "$pkgdir/usr/share/$pkgname/shshim/uuyc-shshim-forwarders.S"
+  install -Dm644 "$srcdir/shshim-forwarders.h" "$pkgdir/usr/share/$pkgname/shshim/uuyc-shshim-forwarders.h"
+  install -Dm644 "$srcdir/shshim-forwarders.def" "$pkgdir/usr/share/$pkgname/shshim/uuyc-shshim-forwarders.def"
+  install -Dm644 "$srcdir/shshim-test.c" "$pkgdir/usr/share/$pkgname/shshim/testshshim.c"
+  install -Dm755 "$srcdir/shshim-test.exe" "$pkgdir/usr/share/$pkgname/shshim/testshshim.exe"
+  install -Dm755 "$srcdir/shshim.dll" "$pkgdir/usr/share/$pkgname/shshim/uuyc-shshim.dll"
+  install -Dm755 "$srcdir/shshim-deploy.sh" "$pkgdir/usr/share/$pkgname/shshim/deploy.sh"
+  install -Dm755 "$srcdir/shshim-gen-forwarders.sh" "$pkgdir/usr/share/$pkgname/shshim/gen-forwarders.sh"
+  # Wine-side UI control: works with the host session locked, where X capture and
+  # input cannot reach the application at all.
+  install -Dm644 "$srcdir/uictl-source.c" "$pkgdir/usr/share/$pkgname/uictl/uuyc-uictl.c"
+  install -Dm755 "$srcdir/uictl.exe" "$pkgdir/usr/share/$pkgname/uictl/uuyc-uictl.exe"
+  install -Dm644 "$srcdir/uictl-README.md" "$pkgdir/usr/share/$pkgname/uictl/README.md"
+  # Evidence copy of the client's native bridge plus the protocol recovered from it.
+  install -Dm644 "$srcdir/bridge-js" "$pkgdir/usr/share/$pkgname/bridge/uuycbridge.js"
+  install -Dm644 "$srcdir/bridge-README.md" "$pkgdir/usr/share/$pkgname/bridge/README.md"
+  # The Wine fix this whole adaptation needed, plus a script that rebuilds Wine.
+  install -Dm755 "$srcdir/winepatch.sh" "$pkgdir/usr/share/$pkgname/winepatch/build-patched-wine.sh"
+  install -Dm644 "$srcdir/winepatch-shell32.patch" "$pkgdir/usr/share/$pkgname/winepatch/0001-shell32-init-window-prop-store-out-params.patch"
+  install -Dm644 "$srcdir/vdshim-source.c" "$pkgdir/usr/share/$pkgname/vdshim/uuyc-vdshim.c"
+  install -Dm644 "$srcdir/vdshim-iathook.c" "$pkgdir/usr/share/$pkgname/vdshim/iathook.c"
+  install -Dm644 "$srcdir/vdshim-test.c" "$pkgdir/usr/share/$pkgname/vdshim/testshim.c"
+  install -Dm755 "$srcdir/vdshim-test.exe" "$pkgdir/usr/share/$pkgname/vdshim/testshim.exe"
+  install -Dm755 "$srcdir/uuyc-vkvideo" "$pkgdir/usr/share/$pkgname/vkvideo/uuyc-vkvideo"
+  install -Dm644 "$srcdir/vkvideo-probe.c" "$pkgdir/usr/share/$pkgname/vkvideo/uuyc-vkvideo.c"
+  install -Dm644 "$srcdir/uuyc-d3dprobe.c" "$pkgdir/usr/share/$pkgname/d3dprobe/uuyc-d3dprobe.c"
+  install -Dm644 "$srcdir/d3dprobe-README.md" "$pkgdir/usr/share/$pkgname/d3dprobe/README.md"
+  install -Dm755 "$srcdir/uuyc-d3dprobe.exe" "$pkgdir/usr/share/$pkgname/d3dprobe/uuyc-d3dprobe.exe"
+  install -Dm644 "$srcdir/$_installer" "$pkgdir/usr/share/$pkgname/$_installer"
+  install -Dm644 "$srcdir/wevtapi.dll" "$pkgdir/usr/share/$pkgname/wevtapi.dll"
+  install -Dm644 "$srcdir/uuyc-wine.desktop" "$pkgdir/usr/share/applications/uuyc-wine.desktop"
+  # Merged menu entry: Wine client by default, Android client as a desktop action.
+  install -Dm644 "$srcdir/uuyc.desktop" "$pkgdir/usr/share/applications/uuyc.desktop"
+  install -Dm644 "$srcdir/icon/.rsrc/ICON/6" "$pkgdir/usr/share/icons/hicolor/256x256/apps/uuyc-wine.png"
+  install -Dm644 "$srcdir/wine-bug-propvariant.md" "$pkgdir/usr/share/$pkgname/wine-bug-propvariant.md"
+  install -Dm644 "$srcdir/qwindows-fontname-crash.md" "$pkgdir/usr/share/$pkgname/qwindows-fontname-crash.md"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  printf '%s\n' "$pkgver" >"$pkgdir/usr/share/$pkgname/upstream-version"
+  printf '%s-%s\n' "$pkgver" "$pkgrel" >"$pkgdir/usr/share/$pkgname/package-release"
+}

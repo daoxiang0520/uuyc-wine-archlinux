@@ -1,0 +1,53 @@
+#!/usr/bin/bash
+# uuyc-android-verify -- check that the packaged APK can run in this container.
+
+set -euo pipefail
+
+readonly share_dir="${UUYC_ANDROID_SHARE_DIR:-/usr/share/uuyc-android}"
+readonly apk="$share_dir/com.netease.uuremote.apk"
+readonly package_name="com.netease.uuremote"
+readonly helper="$share_dir/apk-info.py"
+
+readonly ok=$'\033[32mok\033[0m'
+readonly bad=$'\033[31mFAIL\033[0m'
+readonly warn=$'\033[33mwarn\033[0m'
+failures=0
+
+report() {
+    local state=$1 message=$2
+    printf '%-28s %s\n' "$message" "$state"
+    [[ $state == "$bad" ]] && failures=$((failures + 1)) || true
+}
+
+printf 'package data\n'
+for file in "$apk" "$helper"; do
+    if [[ -r $file ]]; then report "$ok" "$(basename "$file")"; else report "$bad" "$(basename "$file")"; fi
+done
+
+printf '\ncontainer prerequisites\n'
+if command -v waydroid >/dev/null 2>&1; then report "$ok" "waydroid installed"; else report "$bad" "waydroid installed"; fi
+if [[ -e /dev/binder || -e /dev/binderfs/binder ]]; then report "$ok" "binder device"; else report "$bad" "binder device"; fi
+if lsmod 2>/dev/null | grep -qE '^binder_linux\b'; then report "$ok" "binder_linux module"; else report "$warn" "binder_linux module"; fi
+if [[ -r /dev/kvm ]]; then report "$ok" "/dev/kvm present"; else report "$warn" "/dev/kvm present"; fi
+if [[ ${XDG_SESSION_TYPE:-} == wayland || -n ${WAYLAND_DISPLAY:-} ]]; then
+    report "$ok" "Wayland session"
+else
+    report "$bad" "Wayland session"
+fi
+if timeout 15 waydroid status 2>/dev/null | grep -q RUNNING; then
+    report "$ok" "waydroid session"
+else
+    report "$warn" "waydroid session"
+fi
+
+printf '\napk facts\n'
+if [[ -r $apk && -r $helper ]]; then
+    python3 "$helper" "$apk" | sed 's/^/  /'
+fi
+
+printf '\n'
+if ((failures > 0)); then
+    printf '%d check(s) failed\n' "$failures"
+    exit 1
+fi
+printf 'all mandatory checks passed\n'

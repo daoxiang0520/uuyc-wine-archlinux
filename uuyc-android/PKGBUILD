@@ -1,0 +1,101 @@
+# Maintainer: Arch Linux local adaptation of the NetEase UU Remote (网易UU远程)
+# Android client.
+#
+# Upstream publishes no Linux build. The Android APK is packaged here so it can
+# run on Arch Linux through Waydroid, with the ARM translation layer documented
+# for x86_64 hosts (the APK ships arm64-v8a native code only).
+
+pkgname=uuyc-android
+pkgver=4.40.0
+pkgrel=1
+pkgdesc='NetEase UU Remote (网易UU远程) Android client for Arch Linux, run through Waydroid'
+arch=('x86_64' 'aarch64')
+url='https://uuyc.163.com/'
+license=('LicenseRef-UU-Remote-EULA' '0BSD')
+depends=('waydroid' 'python' 'coreutils' 'grep' 'gawk')
+makedepends=('unzip' 'python')
+optdepends=(
+  'libndk-support: alternative prebuilt ARM translation layer'
+  'waydroid-image: boot image handling for custom Waydroid images'
+)
+options=('!strip' '!debug')
+_apk='com.netease.uuremote.apk'
+_apk_dir="${startdir}/local"
+
+source=(
+  "$_apk::file://$_apk_dir/$_apk"
+  'uuyc-android'
+  'uuyc-android-arm'
+  'uuyc-android-verify'
+  'apk-info.py'
+  'uuyc-android.desktop'
+  'icon.png'
+  'LICENSE'
+)
+sha256sums=(
+  '2cc14a4a3fb18066ac0f38ccbc08b17bc05e6d72fb150517269e74316554fef9'  # com.netease.uuremote.apk (upstream 4.40.0)
+  '759d2d2f76385838f47bb13c49a77b53fa94bd4431470763731661db4026eafd'  # uuyc-android launcher
+  '5472ba386bcc1a889b8ceab046de3ac2e6587dadc8bcd8be274baab43b420c9f'  # uuyc-android-arm
+  '4af443613771c022e7829f693ed653523057d9ffc94e832f7075a3fabfe770e3'  # uuyc-android-verify
+  '120fb10baf99cc331967789f968564c985bc77523e57510cee12fd17fd4980a9'  # apk-info.py
+  '779261ce8ef8397ba6d585d33bfcb871c426fb0f3ba3a19b274606c715e19ba8'  # uuyc-android.desktop
+  'e67c8d32dba7f9648182d6960e3379562195ebf1f156ce56a0024405ceb511ae'  # icon.png
+  'e91389eac5bc82c8398518cc7fd04ffbcc76ed009fcbec9f951015340a9ca2b3'  # LICENSE (0BSD)
+)
+# The APK is itself a ZIP archive; keep makepkg from unpacking it into $srcdir.
+noextract=("$_apk")
+
+prepare() {
+  cd "$srcdir"
+  # Sanity-check the APK before it is packaged: a mismatched file must fail the
+  # build instead of producing an unusable package.
+  python3 apk-info.py "$_apk" >apk-facts.txt
+  grep -q '^package            : com.netease.uuremote$' apk-facts.txt || {
+    echo 'the supplied APK is not the UU Remote Android client' >&2
+    cat apk-facts.txt >&2
+    return 1
+  }
+  grep -q 'native abis        : arm64-v8a' apk-facts.txt || {
+    echo 'unexpected native ABI set in the APK' >&2
+    cat apk-facts.txt >&2
+    return 1
+  }
+  # The launcher must reference the packaged APK and helper names.
+  for token in '/usr/share/uuyc-android' "$_apk" 'com.netease.uuremote'; do
+    grep -qF -- "$token" uuyc-android || { echo "launcher is missing $token" >&2; return 1; }
+  done
+}
+
+build() {
+  cd "$srcdir"
+  for script in uuyc-android uuyc-android-arm uuyc-android-verify; do
+    bash -n "$script" || { echo "$script has a syntax error" >&2; return 1; }
+  done
+  python3 -m py_compile apk-info.py || return 1
+  # Keep the icons reproducible: normalise the packaged PNG into 256x256.
+  if [[ -f icon.png ]]; then
+    python3 - <<'PY'
+import struct, zlib, sys
+data = open('icon.png', 'rb').read()
+if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+    sys.exit('icon.png is not a PNG file')
+width, height = struct.unpack('>II', data[16:24])
+if width < 128 or height < 128:
+    sys.exit(f'icon.png is too small: {width}x{height}')
+print(f'icon.png accepted: {width}x{height}')
+PY
+  fi
+}
+
+package() {
+  install -Dm755 "$srcdir/uuyc-android" "$pkgdir/usr/bin/uuyc-android"
+  install -Dm755 "$srcdir/uuyc-android-arm" "$pkgdir/usr/bin/uuyc-android-arm"
+  install -Dm755 "$srcdir/uuyc-android-verify" "$pkgdir/usr/bin/uuyc-android-verify"
+  install -Dm644 "$srcdir/apk-info.py" "$pkgdir/usr/share/$pkgname/apk-info.py"
+  install -Dm644 "$srcdir/$_apk" "$pkgdir/usr/share/$pkgname/$_apk"
+  install -Dm644 "$srcdir/uuyc-android.desktop" "$pkgdir/usr/share/applications/uuyc-android.desktop"
+  install -Dm644 "$srcdir/icon.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/uuyc-android.png"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/apk-facts.txt" "$pkgdir/usr/share/$pkgname/apk-facts.txt"
+  printf '%s\n' "$pkgver" >"$pkgdir/usr/share/$pkgname/upstream-version"
+}

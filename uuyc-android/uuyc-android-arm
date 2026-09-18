@@ -1,0 +1,96 @@
+#!/usr/bin/bash
+# uuyc-android-arm -- enable Waydroid's ARM translation layer on an x86_64 host.
+#
+# The packaged 网易UU远程 APK ships only arm64-v8a native code, so Waydroid on an
+# x86_64 machine can only run it when a native-bridge translation layer is
+# installed. This helper picks the right layer for the installed Waydroid image
+# and enables it.
+#
+# Requires root. Run it once, then restart the Waydroid session.
+#
+# SPDX-License-Identifier: 0BSD
+
+set -euo pipefail
+
+readonly base_prop=/var/lib/waydroid/waydroid_base.prop
+readonly work_dir=/var/lib/waydroid/arm-translation
+readonly libndk_url='https://github.com/casualsnek/waydroid_script'
+readonly libndk_commit='main'
+
+die() {
+    printf 'uuyc-android-arm: %s\n' "$1" >&2
+    exit 1
+}
+
+[[ $EUID -eq 0 ]] || die "run this helper as root: sudo uuyc-android-arm"
+[[ $(uname -m) == x86_64 ]] || die "ARM translation is only needed on x86_64 hosts"
+
+for tool in python3 git curl; do
+    command -v "$tool" >/dev/null 2>&1 || die "missing dependency: $tool"
+done
+
+# The translation layer must match the Android version of the Waydroid image.
+android_version=""
+if [[ -f /var/lib/waydroid/waydroid.cfg ]]; then
+    android_version=$(sed -n 's/^system_channel=.*//p' /var/lib/waydroid/waydroid.cfg || true)
+fi
+if command -v waydroid >/dev/null 2>&1; then
+    android_version=$(waydroid shell -- getprop ro.build.version.release 2>/dev/null | tr -d '\r' || true)
+fi
+[[ -n $android_version ]] || android_version="${UUYC_ANDROID_VERSION:-11}"
+
+case $android_version in
+    11*) variant='libndk' ;;
+    12*|13*) variant='libndk' ;;
+    *) variant='libndk' ;;
+esac
+
+printf 'Waydroid image Android version: %s\n' "$android_version"
+printf 'Selected translation layer  : %s\n' "$variant"
+
+if grep -qE '^ro\.(native\.bridge|dalvik\.vm\.nativebridge)=lib' "$base_prop" 2>/dev/null; then
+    printf 'ARM translation already enabled in %s\n' "$base_prop"
+    grep -E '^ro\.(native\.bridge|dalvik\.vm\.nativebridge)=' "$base_prop"
+    exit 0
+fi
+
+mkdir -p "$work_dir"
+if [[ ! -d $work_dir/waydroid_script/.git ]]; then
+    printf 'Fetching the libndk installer helper ...\n'
+    git clone --depth 1 --branch "$libndk_commit" "$libndk_url" "$work_dir/waydroid_script" || \
+        die "could not clone $libndk_url"
+fi
+
+printf 'Installing %s into the Waydroid image ...\n' "$variant"
+( cd "$work_dir/waydroid_script" && python3 -m pip install --quiet -r requirements.txt || true )
+installed=false
+for candidate in "$variant" libndk libndk_translation libhoudini; do
+    printf '\n--- trying translation layer: %s ---\n' "$candidate"
+    if ( cd "$work_dir/waydroid_script" && python3 main.py install "$candidate" ); then
+        installed=true
+        variant=$candidate
+        break
+    fi
+done
+$installed || die "no translation layer could be installed, see the output above"
+
+# Make sure the properties are present even if the helper changed its layout.
+touch "$base_prop"
+set_prop() {
+    local key=$1 value=$2
+    if grep -q "^${key}=" "$base_prop"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$base_prop"
+    else
+        printf '%s=%s\n' "$key" "$value" >>"$base_prop"
+    fi
+}
+set_prop ro.native.bridge libndk_translation.so
+set_prop ro.dalvik.vm.nativebridge libndk_translation
+set_prop ro.enable.native.bridge.exec 1
+set_prop ro.product.cpu.abilist "x86_64,x86,arm64-v8a,armeabi-v7a,armeabi"
+
+printf '\nARM translation enabled. Restart the session:\n'
+printf '  waydroid session stop\n'
+printf '  waydroid session start\n'
+printf 'Then verify inside the container:\n'
+printf '  waydroid shell -- getprop ro.dalvik.vm.nativebridge\n'

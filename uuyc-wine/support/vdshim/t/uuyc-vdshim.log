@@ -1,0 +1,20 @@
+
+==================== uuyc-vdshim attached ====================
+  exe=Z:\home\daoxiang\ds-workplace\uuyc-archlinux\uuyc-wine\support\vdshim\t\testshim.exe
+[shim] real d3d11 backend: 00006FFFFDC20000 (err 0)
+==== D3D11CreateDevice driver_type=1 flags=0 levels=2 sdk=7 ====
+[shim] real D3D11CreateDevice -> 0 S_OK device=00007FFFFEBF0200
+[shim] device #1 wrapped (real vtable=00006FFFFDC65C00)
+[shim] returning device 00007FFFFEBF4A70
+[shim] wrapped ID3D11VideoDevice (wine's implementation: present)
+[shim] dev1 QueryInterface(ID3D11VideoDevice) -> shim implementation
+[video] dev1 GetVideoDecoderProfileCount: wine=0 shim=2
+[video] GetVideoDecoderProfile(0) -> H264_VLD_NOFGT
+[video] dev1 CheckVideoDecoderFormat profile=H264_VLD_NOFGT fmt=NV12(87) -> wine_impl=0 shim=TRUE
+[fmt] CheckFormatSupport(NV12=87): wine=0/S_OK flags=0x2e4f3f3 -> shim flags=0x18000220
+[fmt] CheckFormatSupport(Y216=104): wine=0x80004005/E_FAIL flags=0 -> shim flags=0x18000220
+[video] dev1 CheckVideoDecoderFormat profile=H264_VLD_NOFGT fmt=Y210(103) [translated] -> wine_impl=0 shim=TRUE
+        translation: NV12 (legacy 103 -> wine 87)
+[video] dev1 GetVideoDecoderConfigCount profile=H264_VLD_NOFGT fmt=Y210 1920x1080: wine=0x80004001(0) -> shim=1
+[video] dev1 GetVideoDecoderConfig index=0 profile=H264_VLD_NOFGT fmt=Y210 -> wine=0x80004001, shim publishes Raw=1 MBraster=0 ResidHost=0 SpatialResid8=0 Resid8Sub=0 Clip=0 Interleaved=0 IntraUnsigned=0 ResidAccel=0 InvScan=0 SpecIDCT=0 Group4=0 RtBuffers=1 DecSpecific=0
+==================== uuyc-vdshim detached ====================

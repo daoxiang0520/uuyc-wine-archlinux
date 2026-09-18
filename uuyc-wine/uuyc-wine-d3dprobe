@@ -1,0 +1,40 @@
+#!/usr/bin/bash
+# uuyc-wine-d3dprobe -- run the packaged D3D11 format-support probe.
+#
+# The remote session dies because Wine reports the D3D11 device as "removed"
+# right after the client asks which video formats can be decoded. This runs a
+# small probe inside the same prefix and prints Wine's own answer, which is the
+# evidence needed either to close the case or to file a Wine bug.
+#
+#   uuyc-wine-d3dprobe            # hardware device (the interesting one)
+#   uuyc-wine-d3dprobe --all      # hardware, then the software rasterizer
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+readonly share_dir="${UUYC_WINE_SHARE_DIR:-/usr/share/uuyc-wine}"
+readonly probe="$share_dir/d3dprobe/uuyc-d3dprobe.exe"
+prefix="${UUYC_WINE_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/uuyc-wine/wineprefix}"
+out_dir="${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine"
+out="$out_dir/d3dprobe.txt"
+
+[[ -r $probe ]] || { printf 'missing probe: %s\n' "$probe" >&2; exit 1; }
+[[ -d $prefix ]] || { printf 'missing wine prefix: %s\n' "$prefix" >&2; exit 1; }
+
+mkdir -p "$out_dir"
+printf 'prefix : %s\n' "$prefix"
+printf 'output : %s\n\n' "$out"
+
+WINEPREFIX="$prefix" WINEDEBUG=-all wine "$probe" "$@" 2>&1 | tee "$out" | grep -viE 'mesa|dri2|^fixme:|^warn:' || true
+
+printf '\n---- compact summary ----\n'
+grep -E 'D3D_DRIVER_TYPE|device created|adapter:|formats? (listed|with)|video (decoder|processor)|NV12|P010|P016|420_OPAQUE|YUY2|AYUV|failed:' "$out" 2>/dev/null | head -40
+
+if grep -q 'DECODER_OUTPUT' "$out" 2>/dev/null; then
+    printf '\nNV12/P010 rows that mention DECODER_OUTPUT are the hardware decode path.\n'
+fi
+if ! grep -qE 'device created' "$out" 2>/dev/null; then
+    printf '\nNo D3D11 device could be created here at all. Check the GPU first:\n'
+    printf '    uuyc-wine-gpu\n'
+fi

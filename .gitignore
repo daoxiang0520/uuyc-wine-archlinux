@@ -1,0 +1,18 @@
+# makepkg build artefacts
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+
+# Local payload drops are required for the build and are kept in git only if the
+# user chooses to track them:
+#   uuyc-wine/local/uuyc-installer.exe
+#   uuyc-android/local/com.netease.uuremote.apk
+
+# 工作区/构建临时目录（本仓库作者本机使用，含前缀副本与回归产物）
+work/
+
+# makepkg 会把 file:// 源「物化」一份到 $startdir，因此包目录里会反复出现
+# 与 support/ 下同名的副本。真正的源在 support/ 下，这些是派生物。
+uuyc-wine/uuyc-installer.exe
+uuyc-android/com.netease.uuremote.apk

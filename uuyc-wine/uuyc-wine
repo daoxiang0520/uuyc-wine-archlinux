@@ -1,0 +1,556 @@
+#!/usr/bin/bash
+# uuyc-wine -- run the NetEase UU Remote (网易UU远程) Windows client on Arch Linux.
+#
+# The upstream product only ships Windows, macOS and mobile builds. This launcher
+# installs the official Windows installer into a dedicated 64-bit Wine prefix and
+# applies the compatibility workarounds UU Remote needs, then starts the service,
+# the supervisor and the desktop client.
+#
+# The prefix is created on first launch and can take several minutes, because the
+# installer plus the Microsoft Edge WebView2 Runtime are installed into it.
+#
+# SPDX-License-Identifier: 0BSD
+# Launcher structure derived from the 0BSD-licensed uuyc-wine package by the
+# uuyc-wine AUR contributors; this version tracks upstream 4.40.1.
+
+set -euo pipefail
+
+readonly app_title="网易UU远程 (Wine)"
+readonly share_dir="${UUYC_WINE_SHARE_DIR:-/usr/share/uuyc-wine}"
+readonly installer="$share_dir/uuyc-installer.exe"
+readonly wevtapi_shim="$share_dir/wevtapi.dll"
+readonly upstream_version_file="$share_dir/upstream-version"
+
+# The Wine binary to run. Overridable so a locally built Wine (for testing a
+# patch, or a newer release) can be used without touching the system one:
+#   UUYC_WINE_BIN=$HOME/wine-patched/bin/wine uuyc-wine
+wine="${UUYC_WINE_BIN:-/usr/bin/wine}"
+if [[ ! -x $wine ]]; then
+    printf 'uuyc-wine: wine binary not executable: %s\n' "$wine" >&2
+    printf '  set UUYC_WINE_BIN to a wine executable, or install the wine package\n' >&2
+    exit 1
+fi
+readonly wine
+readonly wineboot=/usr/bin/wineboot
+readonly wineserver=/usr/bin/wineserver
+readonly winecfg=/usr/bin/winecfg
+
+notify() {
+    command -v notify-send >/dev/null 2>&1 && \
+        notify-send --app-name="$app_title" "$app_title" "$1" || true
+}
+
+die() {
+    printf 'uuyc-wine: %s\n' "$1" >&2
+    notify "$1"
+    exit 1
+}
+
+usage() {
+    cat <<'EOF'
+Usage: uuyc-wine [OPTION] [CLIENT_ARGUMENT...]
+
+Options:
+  --stop         Stop the UU Remote wineserver and everything running in it
+  --repair       Re-run prefix setup before launching
+  --setup-only   Prepare the Wine prefix without launching the client
+  --safe-graphics
+                 force Wine's no3d renderer (UI only; the remote session needs
+                 a GPU, so this is for inspecting the client, not for streaming)
+  --sw-decode    force software video decoding: removes video-decode from
+                 ANV_DEBUG (including a value inherited from the environment)
+                 so the driver hides Vulkan Video again
+  --hw-decode    opt in to hardware video decoding: exports
+                 ANV_DEBUG=video-decode so Intel's ANV driver advertises
+                 VK_KHR_video_decode_h264, which wined3d needs. Without it the
+                 extension is absent and the client decodes in software.
+                 Check first with:  uuyc-wine-vkvideo
+  --debug-crash  launch with Wine's exception and graphics debug channels and
+                 save the output to <state>/crash-debug.log, for diagnosing a
+                 client that dies when a remote session starts
+  --uri URI      Open a uuremote: URI through the Wine handler
+  --version      Print the packaged upstream version
+  -h, --help     Show this help
+
+Environment:
+  UUYC_WINE_PREFIX     use a Wine prefix other than the default
+  UUYC_WINE_SHARE_DIR  read package data from another directory
+  UUYC_WINE_SKIP_WEBVIEW
+                       set to 1 to skip the WebView2 step (automated checks in
+                       a network-restricted sandbox; the client UI needs it)
+  UUYC_WINE_BIN        wine executable to use (default: /usr/bin/wine). Point it
+                       at a locally built Wine to test a patch or a newer build
+                       without touching the system package.
+  WINEDEBUG            forwarded to Wine (default: -all)
+  --debug-crash        writes <state>/crash-debug.log with Wine's backtrace
+
+Default paths:
+  prefix: ${XDG_DATA_HOME:-$HOME/.local/share}/uuyc-wine/wineprefix
+  state:  ${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine
+  log:    ${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine/setup.log
+EOF
+}
+
+# ---------------------------------------------------------------- arguments --
+stop_requested=false
+repair=false
+setup_only=false
+safe_graphics=false
+debug_crash=false
+hw_decode=""
+uri=""
+client_args=()
+
+while (($# > 0)); do
+    case $1 in
+        --stop) stop_requested=true ;;
+        --repair) repair=true ;;
+        --setup-only) setup_only=true ;;
+        --safe-graphics) safe_graphics=true ;;
+        --hw-decode) hw_decode=1 ;;
+        --sw-decode) hw_decode=0 ;;
+        --debug-crash) debug_crash=true ;;
+        --uri)
+            shift
+            (($# > 0)) || die "--uri needs an argument"
+            uri=$1
+            ;;
+        --version)
+            [[ -r $upstream_version_file ]] || die "missing $upstream_version_file"
+            printf '%s\n' "$(<"$upstream_version_file")"
+            exit 0
+            ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; client_args+=("$@"); break ;;
+        uuremote:*) uri=$1 ;;
+        *) client_args+=("$1") ;;
+    esac
+    shift
+done
+
+if $stop_requested && { $repair || $setup_only || [[ -n $uri ]] || ((${#client_args[@]} > 0)); }; then
+    die "--stop cannot be combined with launch or setup options"
+fi
+
+# ------------------------------------------------------------------- paths ---
+readonly data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+readonly state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+readonly data_dir="$data_home/uuyc-wine"
+readonly state_dir="$state_home/uuyc-wine"
+readonly default_prefix="$data_dir/wineprefix"
+readonly setup_log="$state_dir/setup.log"
+
+prefix="${UUYC_WINE_PREFIX:-$default_prefix}"
+readonly prefix
+
+for required in "$installer" "$wevtapi_shim" "$upstream_version_file"; do
+    [[ -r $required ]] || die "missing package data: $required"
+done
+upstream_version=$(<"$upstream_version_file")
+readonly upstream_version
+
+win_user=$(id -un)
+readonly win_user
+readonly install_dir="$prefix/drive_c/Program Files/Netease/GameViewer"
+readonly client="$install_dir/GameViewer.exe"
+readonly server="$install_dir/bin/GameViewerServer.exe"
+readonly healthd="$install_dir/bin/GameViewerHealthd.exe"
+readonly client_image="$install_dir/bin/GameViewer.exe"
+readonly native_wevtapi="$install_dir/bin/wevtapi.dll"
+readonly webview_setup="$install_dir/bin/MicrosoftEdgeWebview2Setup.exe"
+readonly webview_root="$prefix/drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application"
+readonly win_desktop="$prefix/drive_c/users/$win_user/Desktop"
+readonly webview_key='HKLM\Software\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+readonly service_name='GameViewerService'
+readonly service_key='HKLM\System\CurrentControlSet\Services\GameViewerService'
+readonly version_key='HKCU\Software\Netease\GameViewer'
+readonly stamp="$prefix/.uuyc-wine-release"
+
+# --------------------------------------------------------------- utilities ---
+run_logged() {
+    {
+        printf '\n[%(%FT%T%z)T] ' -1
+        printf '%q ' "$@"
+        printf '\n'
+        "$@"
+    } >>"$setup_log" 2>&1
+}
+
+# The remote session renders decoded video through D3D11/DXGI/D2D1 in
+# bin/streamer.dll. wined3d needs a DRM render node to get real hardware; when
+# no node is visible it falls back to llvmpipe, which makes the client crash
+# within seconds or drop the connection. Say so instead of failing silently.
+gpu_visible() {
+    local node
+    for node in /dev/dri/renderD*; do
+        [[ -r $node && -w $node ]] && return 0
+    done
+    return 1
+}
+
+warn_if_no_gpu() {
+    gpu_visible && return 0
+    cat >&2 <<'EOF'
+uuyc-wine: warning: no usable DRM render node (/dev/dri/renderD*) is visible here.
+
+  The remote session decodes and renders video through D3D11, so without a GPU
+  Wine falls back to software rendering and the session will crash within a few
+  seconds -- or connect and then drop. This is an environment problem, not a
+  driver problem: check it with
+
+      uuyc-wine-gpu          # and compare against a normal desktop terminal
+
+  Common causes: the client was started from a sandbox or container that
+  provides a minimal /dev, or the user is not in the "video" group.
+
+  Continuing anyway; add --safe-graphics only for UI-only use.
+EOF
+    return 0
+}
+
+reg_query_value() {
+    local key=$1 value=$2 out line
+    out=$("$wine" reg query "$key" /v "$value" 2>/dev/null) || return 1
+    while IFS= read -r line; do
+        if [[ $line =~ ^[[:space:]]*${value}[[:space:]]+REG_[[:alnum:]_]+[[:space:]]+(.+)$ ]]; then
+            printf '%s\n' "${BASH_REMATCH[1]%$'\r'}"
+            return 0
+        fi
+    done <<<"$out"
+    return 1
+}
+
+# Wine keeps registry edits in the wineserver's memory and only writes them to
+# system.reg/user.reg when the server shuts down. Setup changes the registry
+# (service registration, WebView2 overrides), so stop the server once and wait
+# for the flush; the next wine command starts a fresh server automatically.
+sync_prefix_registry() {
+    if ! process_in_prefix; then
+        return 0
+    fi
+    run_logged "$wineserver" -k || printf 'wineserver -k returned non-zero\n' >>"$setup_log"
+    if ! run_logged "$wineserver" -w; then
+        printf 'wineserver -w returned non-zero, continuing\n' >>"$setup_log"
+    fi
+    return 0
+}
+
+app_files_present() {
+    [[ -f $client && -f $client_image && -f $server && -f $healthd ]]
+}
+
+webview_files_present() {
+    compgen -G "$webview_root/*/msedgewebview2.exe" >/dev/null
+}
+
+webview_ready() {
+    local version
+    version=$(reg_query_value "$webview_key" pv) || return 1
+    [[ -n $version && $version != 0.0.0.0 && -f "$webview_root/$version/msedgewebview2.exe" ]]
+}
+
+prefix_current() {
+    app_files_present || return 1
+    webview_files_present || return 1
+    [[ -r $stamp && $(<"$stamp") == "$upstream_version" ]]
+}
+
+# True when a Wine process of this user is currently serving the configured
+# prefix.
+#
+# Only Wine's own processes are inspected, and only when this user owns them.
+# Scanning every /proc/<pid>/environ would raise "Permission denied" for each
+# process this user does not own, which is not a usable signal and, under
+# `set -e`, is fatal.
+wine_procs_in_prefix() {
+    local names=$1 canonical environment entry value pid
+    canonical=$(readlink -f -- "$prefix" 2>/dev/null) || return 1
+
+    while IFS= read -r pid; do
+        [[ -n $pid ]] || continue
+        environment="/proc/$pid/environ"
+        # Skip processes that already exited or that this user cannot inspect.
+        [[ -r $environment ]] || continue
+        value=""
+        while IFS= read -r -d '' entry; do
+            case $entry in
+                WINEPREFIX=*)
+                    value=${entry#WINEPREFIX=}
+                    break
+                    ;;
+            esac
+        done <"$environment" 2>/dev/null || continue
+        value=${value:-$HOME/.wine}
+        [[ $(readlink -f -- "$value" 2>/dev/null) == "$canonical" ]] && return 0
+    done < <(pgrep -u "$(id -u)" -x -- "$names" 2>/dev/null || true)
+    return 1
+}
+
+process_in_prefix() {
+    wine_procs_in_prefix 'wineserver' || wine_procs_in_prefix 'wine*'
+}
+
+# ------------------------------------------------------------------ --stop ---
+if $stop_requested; then
+    if ! process_in_prefix; then
+        printf 'No UU Remote wineserver is running for: %s\n' "$prefix"
+        exit 0
+    fi
+    notify "正在停止 UU 远程 / Stopping UU Remote"
+    WINEPREFIX="$prefix" WINEDEBUG=-all timeout 15s "$wineserver" -k >/dev/null 2>&1 || true
+    if ! WINEPREFIX="$prefix" WINEDEBUG=-all timeout 10s "$wineserver" -w >/dev/null 2>&1; then
+        die "timed out waiting for the UU Remote wineserver to exit"
+    fi
+    printf 'UU Remote stopped.\n'
+    exit 0
+fi
+
+# ------------------------------------------------------------------ launch ---
+export WINEPREFIX="$prefix"
+export WINEDEBUG="${WINEDEBUG:--all}"
+unset WINEARCH
+
+mkdir -p "$state_dir"
+
+# wevtapi=n,b prefers the native shim shipped in the prefix; winemenubuilder is
+# disabled so the upstream installer cannot rewrite our desktop entries.
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+${WINEDLLOVERRIDES};}wevtapi=n,b;winemenubuilder.exe=d"
+# Never let a WebView2 runtime from the host leak into the prefix.
+unset WEBVIEW2_BROWSER_EXECUTABLE_FOLDER WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+unset WEBVIEW2_USER_DATA_FOLDER WEBVIEW2_CHANNEL_SEARCH_KIND WEBVIEW2_RELEASE_CHANNELS
+
+# --safe-graphics forces Wine's no3d renderer. It gets the client UI running
+# without a GPU, but the remote session still needs Direct3D, so it is a
+# diagnostic switch rather than a usable configuration.
+if $safe_graphics; then
+    export WINE_D3D_CONFIG="${WINE_D3D_CONFIG:+${WINE_D3D_CONFIG};}renderer=no3d"
+fi
+
+# Vulkan Video is Intel's opt-in on ANV: the driver only advertises
+# VK_KHR_video_queue / VK_KHR_video_decode_h264 when ANV_DEBUG contains
+# "video-decode" (see anv_physical_device.c: video_decode_enabled =
+# ANV_DEBUG(VIDEO_DECODE)). wined3d has no VA-API backend, so without that flag
+# the client has no hardware decoder at all and falls back to software.
+#
+#   --hw-decode  adds the flag (opt in)
+#   --sw-decode  removes it, including a value inherited from the environment
+#   neither      leaves ANV_DEBUG exactly as the caller set it
+case ${hw_decode:-} in
+    1)
+        case ",${ANV_DEBUG:-}," in
+            *,video-decode,*) ;;                                  # already present
+            ,,) export ANV_DEBUG=video-decode ;;                   # was unset/empty
+            *)  export ANV_DEBUG="${ANV_DEBUG},video-decode" ;;
+        esac
+        # Wine spawns the client in a prefix whose processes inherit this value;
+        # printing it makes the flag's effect on the client auditable.
+        printf 'uuyc-wine: ANV_DEBUG=%s  (Vulkan Video decode requested)\n' "$ANV_DEBUG" >&2
+        ;;
+    0)
+        # Strip only our own token; keep unrelated ANV debug flags intact.
+        cleaned=""
+        IFS=',' read -ra _anv_parts <<<"${ANV_DEBUG:-}"
+        for _part in "${_anv_parts[@]}"; do
+            [[ -n $_part ]] || continue
+            if [[ $_part == video-decode ]]; then continue; fi
+            cleaned="${cleaned:+$cleaned,}$_part"
+        done
+        if [[ -n $cleaned ]]; then export ANV_DEBUG="$cleaned"; else unset ANV_DEBUG; fi
+        unset _anv_parts _part cleaned
+        ;;
+esac
+
+wine_process_running() {
+    pgrep -u "$(id -u)" -f -x -- "$1" >/dev/null 2>&1
+}
+
+configure_prefix() {
+    local installed_version="" attempt webview_version
+
+    printf '\n=== UU Remote %s setup (package build for Arch Linux) ===\nPrefix: %s\n' \
+        "$upstream_version" "$prefix" >>"$setup_log"
+
+    if [[ ! -f $prefix/system.reg ]]; then
+        mkdir -p "$prefix"
+        notify "正在创建 Wine 前缀，首次运行需要数分钟 / Creating the Wine prefix, this takes a few minutes"
+        if ! WINEPREFIX="$prefix" WINEARCH=win64 WINEDEBUG=-all \
+            WINEDLLOVERRIDES='mscoree,mshtml=;winemenubuilder.exe=d' \
+            "$wineboot" --init >>"$setup_log" 2>&1; then
+            die "failed to create the Wine prefix, see $setup_log"
+        fi
+    fi
+
+    # The upstream installer writes shortcuts to the Windows desktop.
+    [[ -L $win_desktop ]] && rm -f -- "$win_desktop"
+    mkdir -p "$win_desktop"
+
+    if ! run_logged "$winecfg" -v win10; then
+        die "failed to switch the prefix to Windows 10, see $setup_log"
+    fi
+
+    app_files_present && installed_version=$(reg_query_value "$version_key" Version || true)
+
+    if ! app_files_present || [[ -z $installed_version ]] || \
+        (( $(vercmp "$installed_version" "$upstream_version") < 0 )); then
+        notify "正在安装 UU 远程 $upstream_version / Installing UU Remote into the Wine prefix"
+        # The vendor installer may return non-zero after committing its payload,
+        # and on a freshly created prefix the very first run occasionally exits
+        # early while the prefix settles. Retry a few times and treat the
+        # installed files as the source of truth.
+        for round in 1 2 3; do
+            if ! run_logged "$wine" "$installer" /S /launchapp=0 /autorun=0; then
+                printf 'installer round %d returned non-zero, validating installed files\n' \
+                    "$round" >>"$setup_log"
+            fi
+            for ((attempt = 0; attempt < 240; attempt++)); do
+                app_files_present && break
+                sleep 0.25
+            done
+            app_files_present && break
+            printf 'installer round %d produced no payload, retrying\n' "$round" >>"$setup_log"
+            sleep 2
+        done
+        app_files_present || die "UU Remote did not install its files, see $setup_log"
+        # The installer may drop a shortcut on the prefix desktop; the package
+        # provides its own desktop entry, so remove any it created.
+        rm -f -- "$win_desktop"/*UU*.lnk "$win_desktop"/*UU*.desktop
+    fi
+
+    install -m644 "$wevtapi_shim" "$native_wevtapi" || \
+        die "failed to install the Event Log compatibility DLL, see $setup_log"
+
+    # The silent installer writes the payload but does not always finish the
+    # service registration, so register GameViewerService when it is missing and
+    # then enable it. With the registration in place Wine starts the service.
+    if ! run_logged "$wine" reg query "$service_key" >/dev/null 2>&1; then
+        printf 'GameViewerService was not registered by the installer, registering it\n' >>"$setup_log"
+        run_logged "$wine" sc create "$service_name" \
+            binPath="C:\\Program Files\\Netease\\GameViewer\\GameViewerService.exe --service" \
+            start=auto DisplayName="UU Remote Service" || \
+            printf 'sc create returned non-zero, continuing\n' >>"$setup_log"
+        run_logged "$wine" reg add "$service_key" /v Start /t REG_DWORD /d 2 /f || true
+    fi
+    if ! run_logged "$wine" reg query "$service_key" >/dev/null 2>&1; then
+        die "GameViewerService could not be registered in the Wine prefix, see $setup_log"
+    fi
+    run_logged "$wine" reg add "$service_key" /v Start /t REG_DWORD /d 2 /f || \
+        die "failed to enable GameViewerService, see $setup_log"
+
+    if ! webview_ready && [[ ${UUYC_WINE_SKIP_WEBVIEW:-0} != 1 ]]; then
+        [[ -f $webview_setup ]] || die "the bundled WebView2 installer is missing, see $setup_log"
+        notify "正在安装 WebView2 运行时 / Installing Microsoft Edge WebView2 Runtime"
+        if ! run_logged "$wine" "$webview_setup" /silent /install; then
+            printf 'WebView2 installer returned non-zero, validating the runtime\n' >>"$setup_log"
+        fi
+        for ((attempt = 0; attempt < 240; attempt++)); do
+            webview_ready && break
+            sleep 0.5
+        done
+        webview_ready || die "WebView2 Runtime installation did not finish, see $setup_log"
+    fi
+
+    run_logged "$wine" reg add 'HKCU\Software\Wine\AppDefaults\msedgewebview2.exe' \
+        /v Version /t REG_SZ /d win8 /f || die "failed to configure WebView2, see $setup_log"
+    run_logged "$wine" reg add 'HKCU\Software\Wine\X11 Driver' \
+        /v UseTakeFocus /t REG_SZ /d N /f || die "failed to configure Wine focus handling, see $setup_log"
+
+    webview_version=$(reg_query_value "$webview_key" pv || true)
+    app_files_present || die "UU Remote files disappeared during setup, see $setup_log"
+    cmp -s "$wevtapi_shim" "$native_wevtapi" || die "Event Log shim verification failed, see $setup_log"
+    if [[ -n $webview_version ]]; then
+        :
+    elif [[ ${UUYC_WINE_SKIP_WEBVIEW:-0} == 1 ]]; then
+        # Escape hatch for automated checks in a network-restricted sandbox: the
+        # client needs WebView2 to render its UI, so this only skips the check.
+        printf 'WebView2 verification skipped (UUYC_WINE_SKIP_WEBVIEW=1)\n' >>"$setup_log"
+    else
+        die "WebView2 verification failed, see $setup_log"
+    fi
+
+    printf '%s\n' "$upstream_version" >"${stamp}.tmp"
+    mv -f "${stamp}.tmp" "$stamp"
+    notify "UU 远程准备完成 / UU Remote setup completed"
+}
+
+if $repair || ! prefix_current; then
+    exec 9>"$state_dir/setup.lock"
+    flock 9
+    if $repair || ! prefix_current; then
+        if process_in_prefix && { wine_process_running "$client" || wine_process_running "$client_image"; }; then
+            die "UU Remote is still running, close it first and start uuyc-wine again"
+        fi
+        configure_prefix
+    fi
+    flock -u 9
+fi
+
+if $setup_only; then
+    sync_prefix_registry
+    exit 0
+fi
+app_files_present || die "UU Remote is not installed correctly, run: uuyc-wine --repair"
+
+# Persist the setup-time registry changes before the service is started.
+sync_prefix_registry
+
+service_running() {
+    local out line
+    out=$("$wine" sc query "$service_name" 2>/dev/null) || return 1
+    while IFS= read -r line; do
+        line=${line%$'\r'}
+        [[ $line =~ ^[[:space:]]*STATE[[:space:]]*:[[:space:]]*4[[:space:]]+RUNNING[[:space:]]*$ ]] && return 0
+    done <<<"$out"
+    return 1
+}
+
+ensure_service_running() {
+    local attempt
+    run_logged "$wine" sc start "$service_name" || true
+    for ((attempt = 0; attempt < 150; attempt++)); do
+        service_running && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+ensure_binary_running() {
+    local binary=$1 attempt
+    if ! wine_process_running "$binary"; then
+        ( cd "$install_dir/bin" && nohup "$wine" "$binary" >/dev/null 2>&1 & )
+    fi
+    for ((attempt = 0; attempt < 60; attempt++)); do
+        wine_process_running "$binary" && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
+ensure_service_running || die "GameViewerService did not reach RUNNING under Wine, see $setup_log"
+# Wine's service process cannot spawn interactive children, so start the
+# supervisor and the server explicitly in this session.
+ensure_binary_running "$healthd" || die "GameViewerHealthd.exe did not start under Wine"
+ensure_binary_running "$server" || die "GameViewerServer.exe did not start under Wine"
+
+sleep 1
+warn_if_no_gpu
+
+# --debug-crash: keep Wine's exception/d3d traces, which is the only place the
+# real backtrace of a client crash is visible (the vendor log is encrypted).
+if $debug_crash; then
+    # Start from +seh (which prints the exception and a backtrace) and add the
+    # graphics channels. Listing a channel that does not exist is harmless, so
+    # both spellings of the Vulkan/wined3d channels are enabled on purpose.
+    export WINEDEBUG="+seh,+d3d,+d3d11,+dxgi,+wined3d,+vulkan,+winevulkan,d3d11_stub"
+    crash_log="$state_dir/crash-debug.log"
+    : >"$crash_log"
+    printf 'uuyc-wine: debug channels enabled, writing to %s\n' "$crash_log" >&2
+    # Redirect to the file directly: a tee pipe can be torn down before it
+    # flushes, which would lose exactly the last lines -- the backtrace.
+    exec >>"$crash_log" 2>&1
+fi
+
+cd "$install_dir"
+if [[ -n $uri ]]; then
+    exec "$wine" start "$uri"
+fi
+exec "$wine" "$client" "${client_args[@]}"

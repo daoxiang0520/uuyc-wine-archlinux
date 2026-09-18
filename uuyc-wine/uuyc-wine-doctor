@@ -1,0 +1,284 @@
+#!/usr/bin/bash
+# uuyc-wine-doctor -- collect the evidence needed to explain a failing session.
+#
+#   uuyc-wine-doctor                 print a report to stdout
+#   uuyc-wine-doctor > report.txt    save it
+#
+# Nothing is modified; the script only reads the prefix, the registry and the
+# client's own logs. Review the output before sharing it: device names, account
+# identifiers and remote-assistance codes may appear in the Wine registry.
+
+set -uo pipefail
+
+readonly data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+readonly state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+prefix="${UUYC_WINE_PREFIX:-$data_home/uuyc-wine/wineprefix}"
+install_dir="$prefix/drive_c/Program Files/Netease/GameViewer"
+wine=/usr/bin/wine
+
+section() { printf '\n===== %s =====\n' "$1"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+section "host"
+printf 'date            : %s\n' "$(date -Is)"
+printf 'kernel          : %s\n' "$(uname -r)"
+printf 'arch            : %s\n' "$(uname -m)"
+printf 'session type    : %s (WAYLAND_DISPLAY=%s DISPLAY=%s)\n' \
+    "${XDG_SESSION_TYPE:-?}" "${WAYLAND_DISPLAY:-}" "${DISPLAY:-}"
+printf 'desktop         : %s\n' "${XDG_CURRENT_DESKTOP:-?}"
+have wine && printf 'wine            : %s\n' "$(wine --version 2>/dev/null)"
+have pacman && printf 'wine package    : %s\n' "$(pacman -Q wine 2>/dev/null || echo 'not from pacman')"
+
+section "graphics — the remote session renders decoded video through D3D11"
+if [[ -d /dev/dri ]]; then
+    printf 'dri devices     : %s\n' "$(ls /dev/dri 2>/dev/null | tr '\n' ' ')"
+    printf 'renderD nodes   : %s\n' "$(ls /dev/dri/renderD* 2>/dev/null | tr '\n' ' ')"
+else
+    printf 'dri devices     : NONE — no GPU device nodes, only software rendering\n'
+fi
+printf 'vulkan icd      : %s\n' \
+    "$(ls /usr/share/vulkan/icd.d/*.json 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
+printf 'glxinfo         : '
+if have glxinfo; then
+    timeout 20 glxinfo -B 2>/dev/null | grep -E "OpenGL renderer|OpenGL version" | tr '\n' ' '
+    printf '\n'
+else
+    printf 'not installed\n'
+fi
+
+section "wine prefix"
+printf 'prefix          : %s\n' "$prefix"
+if [[ -f $prefix/system.reg ]]; then
+    printf 'prefix state    : exists\n'
+else
+    printf 'prefix state    : MISSING (run: uuyc-wine --setup-only)\n'
+fi
+printf 'setup stamp     : %s\n' "$([[ -r $prefix/.uuyc-wine-release ]] && cat "$prefix/.uuyc-wine-release" || echo missing)"
+
+section "application files"
+for file in GameViewer.exe bin/GameViewer.exe bin/GameViewerServer.exe \
+            bin/GameViewerHealthd.exe bin/wevtapi.dll bin/streamer.dll; do
+    if [[ -f $install_dir/$file ]]; then
+        printf '  ok      %-28s %s bytes\n' "$file" "$(stat -c%s "$install_dir/$file")"
+    else
+        printf '  MISSING %s\n' "$file"
+    fi
+done
+
+section "WebView2 runtime (the client UI and parts of the session view need it)"
+webview_root="$prefix/drive_c/Program Files (x86)/Microsoft/EdgeWebView/Application"
+if compgen -G "$webview_root/*/msedgewebview2.exe" >/dev/null; then
+    printf 'installed       : %s\n' "$(ls "$webview_root" | tr '\n' ' ')"
+else
+    cat <<'EOF'
+installed       : NO
+  The first-run WebView2 install needs TLS to reach Microsoft. If it failed,
+  the UI can render incompletely and the session view can abort right after
+  you pick a device. Fix it with a working proxy and then repair:
+      export https_proxy=http://127.0.0.1:7897
+      uuyc-wine --repair
+EOF
+fi
+
+section "wine registry settings the launcher applies"
+for key_value in \
+    'HKCU\Software\Wine\X11 Driver|UseTakeFocus' \
+    'HKCU\Software\Wine\AppDefaults\msedgewebview2.exe|Version' \
+    'HKLM\System\CurrentControlSet\Services\GameViewerService|Start'; do
+    key=${key_value%%|*}
+    value=${key_value##*|}
+    printf '  %s / %s = ' "$key" "$value"
+    WINEPREFIX="$prefix" WINEDEBUG=-all timeout 60 wine reg query "$key" /v "$value" 2>/dev/null \
+        | awk -v v="$value" '$1==v {print $2, $3}' | head -1 || printf '(query failed)\n'
+    printf '\n'
+done
+
+section "rendering / graphics overrides currently in effect"
+printf 'WINEDLLOVERRIDES = %s\n' "${WINEDLLOVERRIDES:-<unset>}"
+printf 'WINEESYNC        = %s\n' "${WINEESYNC:-<unset>}"
+printf 'WINEFSYNC        = %s\n' "${WINEFSYNC:-<unset>}"
+printf 'MESA_LOADER_DRIVER_OVERRIDE = %s\n' "${MESA_LOADER_DRIVER_OVERRIDE:-<unset>}"
+printf 'LIBVA_DRIVER_NAME = %s\n' "${LIBVA_DRIVER_NAME:-<unset>}"
+
+section "session outcome — the client records this itself"
+client_sentry="$install_dir/log/client/Sentry"
+if [[ -d $client_sentry ]]; then
+    [[ -r $client_sentry/last_crash ]] && \
+        printf 'last crash      : %s\n' "$(tr -d '\0' <"$client_sentry/last_crash")"
+    # Sentry stores the crash session as a length-prefixed record plus a JSON
+    # line; pull the JSON line wherever it lives.
+    record=$(grep -rhoE '\{"init":true[^}]*\}' "$client_sentry" 2>/dev/null | tail -1)
+    if [[ -n $record ]]; then
+        printf 'crash session   : %s\n' "$record"
+        case $record in
+            *'"duration":4.'*|*'"duration":3.'*|*'"duration":2.'*|*'"duration":1.'*|*'"duration":0.'*)
+                printf 'interpretation  : the client died within seconds of starting the\n'
+                printf '                  session, i.e. it crashes while building the video\n'
+                printf '                  pipeline. A network problem would not crash it.\n'
+                ;;
+            *)
+                printf 'interpretation  : the client survived a while, so look at the\n'
+                printf '                  streamer logs below for the real failure.\n'
+                ;;
+        esac
+    else
+        printf 'no crash session record found\n'
+    fi
+else
+    printf 'no client Sentry directory yet (the client never ran)\n'
+fi
+
+section "log storm check — a healthy session does not fill 10 MiB logs"
+storm=0
+while IFS= read -r log; do
+    size=$(stat -c%s "$log")
+    if (( size >= 10485760 )); then
+        printf '  ROTATED %10s  %s\n' "$size" "$(basename "$log")"
+        storm=$((storm + 1))
+    fi
+done < <(find "$install_dir/log/client/log" -name 'streamer_log_controller_*' 2>/dev/null | sort)
+if ((storm > 0)); then
+    printf '  %d rotated streamer log(s): the streamer is looping on an error every\n' "$storm"
+    printf '  frame instead of decoding video.\n'
+else
+    printf '  none\n'
+fi
+
+section "session graphics — did the D3D device survive?"
+crash_log="${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine/crash-debug.log"
+if [[ -r $crash_log ]]; then
+    # grep -c exits 1 when the count is 0, so `$(grep -c ... || echo 0)` yields
+    # two lines ("0\n0") and every (( )) test below then fails with a syntax
+    # error. Capture stdout only and default it.
+    count_in() { local n; n=$(grep -c -- "$1" "$crash_log" 2>/dev/null) || true; printf '%s' "${n:-0}"; }
+    removed=$(count_in 'GetDeviceRemovedReason')
+    held=$(count_in 'still holding back buffer')
+    gl=$(count_in 'adapter_gl_create')
+    vk=$(count_in 'adapter_vk_')
+    presents=$(count_in 'd3d11_swapchain_Present')
+    printf 'backend actually used : %s\n' \
+        "$( ((vk > 0)) && echo 'wined3d Vulkan (adapter_vk)' || echo 'wined3d OpenGL (adapter_gl)')"
+    printf 'adapter_gl_create     : %s\n' "$gl"
+    printf 'adapter_vk_*          : %s\n' "$vk"
+    printf 'swapchain presents    : %s\n' "$presents"
+    printf 'device removed reason : %s call(s)\n' "$removed"
+    printf 'back buffer still held: %s\n' "$held"
+    if ((removed > 0)); then
+        printf '\ninterpretation: the client created a D3D11 device and a real swapchain\n'
+        printf 'for the session window, presented a couple of frames, then the device\n'
+        printf 'was reported removed and the client exited. Wine reports the device as\n'
+        printf 'removed when the application asks for something wined3d cannot provide,\n'
+        printf 'which is why no GPU or GL error appears in the log.\n'
+    fi
+else
+    printf 'no %s yet -- run: uuyc-wine --debug-crash\n' "$crash_log"
+fi
+
+section "shim log attribution — which process actually used D3D11 video"
+shim_log_candidates=(
+    "$install_dir/bin/uuyc-vdshim.log"
+    "$install_dir/uuyc-vdshim.log"
+)
+shim_log=""
+for candidate in "${shim_log_candidates[@]}"; do
+    [[ -r $candidate ]] && { shim_log=$candidate; break; }
+done
+if [[ -n $shim_log ]]; then
+    printf 'log: %s\n' "$shim_log"
+    python3 - "$shim_log" <<'PYEOF' || printf '  (python3 unavailable, skipping)\n'
+import re, sys
+rows, cur = {}, None
+for line in open(sys.argv[1], errors="replace"):
+    line = line.rstrip("\n")
+    if "attached" in line:
+        cur = None
+        continue
+    m = re.match(r"\s+exe=(.*)", line)
+    if m:
+        cur = m.group(1).split("\\")[-1]
+        rows.setdefault(cur, {"dev": 0, "qi": 0, "video": 0, "kinds": set()})
+        continue
+    if cur is None:
+        continue
+    r = rows[cur]
+    if "[video]" in line:
+        r["video"] += 1
+        k = re.search(r"\[video\] dev\d+ ([A-Za-z]+)", line)
+        if k:
+            r["kinds"].add(k.group(1))
+    if "QueryInterface" in line:
+        r["qi"] += 1
+    if "wrapped" in line and "device #" in line:
+        r["dev"] += 1
+if not rows:
+    print("  no attributed entries")
+for name, r in rows.items():
+    kinds = ", ".join(sorted(r["kinds"])) or "-"
+    print(f"  {name:<30} dev={r['dev']:<3} qi={r['qi']:<4} video={r['video']:<5} {kinds}")
+PYEOF
+    printf '  Processes with no video calls never exercised the decode path;\n'
+    printf '  a decoder is only created during a real streaming session.\n'
+else
+    printf 'no shim log found (deploy support/vdshim first)\n'
+fi
+
+section "crash dumps"
+found=0
+while IFS= read -r dump; do
+    printf '  %s (%s bytes, %s)\n' "$dump" "$(stat -c%s "$dump")" "$(stat -c%y "$dump")"
+    found=1
+done < <(find "$prefix" -iname '*.dmp' 2>/dev/null | head -10)
+((found)) || printf '  none\n'
+
+section "client logs (encrypted SL, listed for correlation only)"
+while IFS= read -r log; do
+    printf '  %-70s %s bytes  %s\n' "${log#"$install_dir"/}" "$(stat -c%s "$log")" "$(stat -c%y "$log")"
+done < <(find "$install_dir/log" -name '*.slog' 2>/dev/null | sort | tail -8)
+
+section "launcher setup log (last 40 lines)"
+setup_log="$state_home/uuyc-wine/setup.log"
+if [[ -r $setup_log ]]; then
+    tail -40 "$setup_log"
+else
+    printf 'missing: %s\n' "$setup_log"
+fi
+
+cat <<'EOF'
+
+===== what to try next =====
+
+The session view decodes and renders the remote desktop through D3D11 / DXGI /
+D2D1 (see the import table of bin/streamer.dll). Everything below narrows down
+which layer fails, in order of likelihood.
+
+1. Force Wine's OpenGL renderer instead of the Vulkan one (no Vulkan ICDs are
+   present on this host, so the default path can fail immediately):
+     WINE_D3D_CONFIG=renderer=gl uuyc-wine
+
+2. Same idea, but scoped to Direct3D only, leaving the rest of the prefix alone:
+     WINEDLLOVERRIDES='d3d11,dxgi,d2d1=b' uuyc-wine
+
+3. Disable 3D entirely, to distinguish "video pipeline fails" from "video is
+   simply slow":
+     WINE_D3D_CONFIG=renderer=no3d uuyc-wine
+
+4. Watch the launcher and the service while the session opens, in two terminals:
+     true                                  # terminal 1
+     tail -f "${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine/setup.log"
+     ls -la "$prefix/drive_c/Program Files/Netease/GameViewer/log/service/Log"
+
+5. Note the exact failure mode, because it separates two very different causes:
+
+   * the window vanishes with no message   -> a Wine rendering crash
+   * a toast/error appears, then it returns -> the session never connected
+     (device firewall: TCP 443/8080/8443 plus the UDP relay range; or the
+      controlling device is not allowed on the controlled machine)
+
+6. If the host has an NVIDIA GPU, the client also loads an NVIDIA-specific
+   renderer helper (bin/nrd_renderer_ipc.dll). On a non-NVIDIA host or under
+   Wine that helper can abort the session; test with a software-only decode
+   request via the in-app 设置 → 画质/解码 options.
+
+These are diagnostics: they trade frame rate for stability so that the failing
+layer becomes visible. Report which step changes the behaviour.
+EOF

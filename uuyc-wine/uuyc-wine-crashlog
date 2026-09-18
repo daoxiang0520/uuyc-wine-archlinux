@@ -1,0 +1,157 @@
+#!/usr/bin/bash
+# uuyc-wine-crashlog -- pull the useful lines out of a --debug-crash log.
+#
+# A full WINEDEBUG log is mostly fixme noise from WebView2 and the shell; the
+# crash itself is a handful of lines. This prints those, in the order you want
+# to read them.
+#
+#   uuyc-wine-crashlog                 # analyse the default crash-debug.log
+#   uuyc-wine-crashlog /path/to.log    # analyse another file
+#
+# SPDX-License-Identifier: 0BSD
+
+set -uo pipefail
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/uuyc-wine"
+log="${1:-$state_dir/crash-debug.log}"
+
+[[ -r $log ]] || { printf 'cannot read %s\n' "$log" >&2; exit 1; }
+
+printf 'file      : %s\n' "$log"
+printf 'size      : %s bytes, %s lines\n' "$(stat -c%s "$log")" "$(wc -l <"$log")"
+printf 'window title / uptime markers are not in this log; the lines below are.\n'
+
+section() { printf '\n===== %s =====\n' "$1"; }
+ok=$'\033[32mok\033[0m'
+bad=$'\033[31mFAIL\033[0m'
+warn=$'\033[33mnote\033[0m'
+
+section "1. unhandled exceptions — this is the crash"
+grep -nE 'err:seh:|Unhandled exception|unhandled exception|wine: Unhandled' "$log" 2>/dev/null | head -20 || true
+[[ -n $(grep -lE 'err:seh:|Unhandled exception' "$log" 2>/dev/null) ]] || \
+    printf '  (none: the process may have exited cleanly instead of faulting)\n'
+
+section "2. exception records of any kind (thrown and caught)"
+grep -nE 'seh:.*(exception code|ExceptionCode|dispatch|RtlRaiseException)' "$log" 2>/dev/null \
+    | grep -viE 'RtlUnwindEx  info|RtlUnwindEx r|RtlUnwindEx rip' | head -25 || \
+    printf '  (none)\n'
+
+section "3. backtrace blocks"
+grep -n -A14 'Backtrace:' "$log" 2>/dev/null | head -60 || printf '  (no backtrace block)\n'
+
+section "3a. video format support queries — where hardware decode is decided"
+support=$(grep -oE 'CheckFormatSupport iface \S+, format [0-9]+' "$log" 2>/dev/null | grep -oE '[0-9]+$' | sort -n | uniq -c | sort -rn)
+if [[ -n $support ]]; then
+    printf '  Wine answered %s CheckFormatSupport calls for %s distinct formats.\n' \
+        "$(grep -c 'CheckFormatSupport' "$log")" "$(grep -oE 'format [0-9]+' "$log" | sort -u | wc -l)"
+    printf '  (Wine answers this partly itself, partly from wined3d.) Formats asked about:\n'
+    for f in 87 88 93 103 104 105 106; do
+        # grep -c exits 1 when the count is 0, so `|| echo 0` would append a
+        # second "0" and break the arithmetic below. Take the stdout only.
+        n=$(grep -c "format $f," "$log" 2>/dev/null) || true; n=${n:-0}
+        ((n)) || continue
+        case $f in
+            87)  name='NV12   (standard hardware-decode output)' ;;
+            88)  name='420_OPAQUE' ;;
+            93)  name='P208' ;;
+            103) name='P010   (10-bit hardware decode)' ;;
+            104) name='P016' ;;
+            105) name='(YUV 4:4:4)' ;;
+            106) name='(YUV 4:4:4 10-bit)' ;;
+        esac
+        printf '    format %-4s %-36s asked %s time(s)\n' "$f" "$name" "$n"
+    done
+else
+    printf '  (no format-support queries in this log)\n'
+fi
+
+section "3b. hardware video decode gate — the decisive evidence for --hw-decode"
+# wined3d_decoder_vk_is_h264_decode_supported() has two gates:
+#   1. vk_info->supported[WINED3D_VK_KHR_VIDEO_DECODE_H264]
+#   2. vkGetPhysicalDeviceVideoCapabilitiesKHR(H.264 High / progressive / NV12)
+# Pass both and wined3d_decoder_vk_get_profiles() adds DXVA_ModeH264_VLD_NoFGT,
+# which is what ID3D11VideoDevice::GetVideoDecoderProfileCount then reports.
+# Wine traces the *pointer* argument, not the returned count, so the count itself
+# is not in the log. What is usable is the downstream behaviour: a client that got
+# zero profiles stops here, while one that got DXVA_ModeH264_VLD_NoFGT goes on to
+# enumerate decoder configs and create a decoder.
+profiles=$(grep -cE 'get_video_decode_profile_count|GetVideoDecoderProfileCount' "$log" 2>/dev/null || true)
+configs=$(grep -cE 'GetVideoDecoderConfigCount|video_decoder_config_count' "$log" 2>/dev/null || true)
+decoders=$(grep -cE 'CreateVideoDecoder|create_video_decoder' "$log" 2>/dev/null || true)
+
+printf '  decode-profile queries : %s\n' "$profiles"
+printf '  decoder-config queries : %s\n' "$configs"
+printf '  decoder creations      : %s\n\n' "$decoders"
+if ((profiles)); then
+    printf '  The client asked for profiles, so it is on the hardware path.\n'
+    if ((decoders)); then
+        printf '  %s it CREATED a decoder: the profile list was non-empty and the\n' "$ok"
+        printf '      decode setup completed. This is the outcome you want.\n'
+    elif ((configs)); then
+        printf '  %s it asked for decoder configs but never created a decoder. The\n' "$warn"
+        printf '      profile list was non-empty, so the stall is at the config step\n'
+        printf '      or immediately after it. Check the shim log for the last\n'
+        printf '      GetVideoDecoderConfig / CreateVideoDecoder line.\n'
+    else
+        printf '  %s it never configured or created a decoder: the profile list came\n' "$bad"
+        printf '      back empty (or it gave up before using it).\n'
+    fi
+else
+    printf '  (the client never asked for decode profiles in this log)\n'
+fi
+
+if grep -qE 'Failed to query video capabilities' "$log" 2>/dev/null; then
+    printf '\n  %s gate 2 failed: wined3d got a VkResult != VK_SUCCESS from\n' "$bad"
+    printf '      vkGetPhysicalDeviceVideoCapabilitiesKHR. The driver was asked for\n'
+    printf '      H.264 High / progressive / NV12 and refused.\n'
+    grep -nE 'Failed to query video capabilities' "$log" | head -3
+fi
+
+if grep -qE 'video_decode_h264|VK_KHR_video_decode|WINED3D_VK_KHR_VIDEO' "$log" 2>/dev/null; then
+    printf '\n  video-extension mentions:\n'
+    grep -nE 'video_decode_h264|VK_KHR_video_decode|WINED3D_VK_KHR_VIDEO' "$log" | head -10
+fi
+
+printf '\n  Check the driver side independently with:\n'
+printf '      uuyc-wine-vkvideo\n'
+printf '  It prints both gates for this machine without involving Wine at all.\n'
+
+section "3c. UNIMPLEMENTED Direct3D methods — the most likely cause"
+if grep -qE 'd3d11_stub|Stub\!|stub!|not implemented' "$log" 2>/dev/null; then
+    grep -nE 'd3d11_stub|Stub!|stub!' "$log" 2>/dev/null | grep -viE 'ncrypt|bcrypt|thread:|process:|file:|win:|ui:|wtsapi|kernelbase|sechost' | head -30
+    printf '\n  Each line above is a D3D call Wine does not implement. The client\n'
+    printf '  receives a failure for it and, at the D3D11 level, that surfaces as a\n'
+    printf '  removed device -- which is why the session window closes with no\n'
+    printf '  picture and no error.\n'
+else
+    printf '  (none)\n'
+fi
+
+section "4. graphics errors — where the session renderer gives up"
+grep -nE 'err:(d3d|d3d11|dxgi|wined3d|vulkan|winevulkan)' "$log" 2>/dev/null | head -30 || \
+    printf '  (none)\n'
+grep -nE '(err|warn):(d3d|d3d11|dxgi|wined3d|vulkan|winevulkan)' "$log" 2>/dev/null | head -30 || true
+
+section "5. only the errors, with fixme noise removed"
+printf '  (last 40 err:/warn: lines from the whole log)\n'
+grep -nE '(^|[0-9a-f]{4}:)(err|warn):' "$log" 2>/dev/null \
+    | grep -viE 'ncrypt:|bcrypt:|ThreadPowerThrottling|NtQueryInformationProcess|secur32:start_samss|load_auth_packages|MESA|dri2' \
+    | tail -40 || printf '  (none)\n'
+
+section "6. the last 25 lines (how it ended)"
+tail -25 "$log"
+
+cat <<'EOF'
+
+===== how to read this =====
+
+  Section 1 with a line  -> that is the fault: its module and address are the
+                            crash point, and section 3 shows the call stack.
+  Section 1 empty        -> the client did not fault; it exited on its own
+                            after a failed graphics or session call. Then
+                            section 4 is the interesting one.
+  Section 4 non-empty    -> the renderer said why it failed; that reason is
+                            what has to be worked around.
+
+Paste sections 1 to 4 here, not the tail.
+EOF
