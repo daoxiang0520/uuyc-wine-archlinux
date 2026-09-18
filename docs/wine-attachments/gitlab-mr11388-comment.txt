@@ -85,5 +85,3 @@ Attachments:
 * `uuyc-otmprobe.c` -- the probe above (build: `x86_64-w64-mingw32-gcc -O2 -o uuyc-otmprobe.exe uuyc-otmprobe.c -lgdi32`)
 * `probe-output.txt` -- its full output on this machine
 * `qt-call-sequence.txt` -- the QUERY/FILL trace with the face name
-
----
