@@ -196,6 +196,20 @@ one `GetValue` call is needed to see the uninitialised `var`; any test program t
 calls `IPropertyStore::GetValue` on the window store and ignores the `HRESULT` will
 show it.
 
+## 已提交：Bugzilla Bug 60346（2026-09-18）
+
+<https://bugs.winehq.org/show_bug.cgi?id=60346>
+
+| 字段 | 值 |
+| --- | --- |
+| Summary | `shell32: the window property store returns E_NOTIMPL without initialising its output parameters` |
+| Component / Version | `shell32` / `11.17` |
+| 状态 | UNCONFIRMED（提交当日） |
+| 附件 | `propvariant-poison-test.c`、`propvariant-poison-test-output.txt`、`propvariant-0001-shell32-init-out-params.patch` |
+
+报告正文与三个附件在 `docs/wine-attachments/`。**注意该 bug 的 CC 列表仍是空的** ——
+不加自己就不会收到任何后续回复。
+
 ## 上游现状与建议的报告形式（2026-09-18 核对）
 
 直接取 `master` 的 `dlls/shell32/shell32_main.c` 核对，三个方法**至今未改**：

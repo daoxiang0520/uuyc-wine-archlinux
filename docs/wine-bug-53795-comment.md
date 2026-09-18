@@ -1,4 +1,17 @@
-# Bug 53795 的评论稿 + CC 请求
+# Bug 53795 的评论稿 + CC 请求 —— **已提交（2026-09-18）**
+
+<https://bugs.winehq.org/show_bug.cgi?id=53795>
+
+提交结果核对（2026-09-18）：
+
+| 项 | 状态 |
+| --- | --- |
+| CC 列表 | 已加入 `15959866515` ✓（提交前是 0 人） |
+| 评论 | 6 条（原 2 条 + 我们的评论与附件说明） |
+| 附件 | 原 `hello.cpp`、`wine-emoji-crash-backtrace.txt` + 本次新增 `uuyc-otmprobe.c`、`otmprobe-output.txt`、`qt-call-sequence.txt` ✓ |
+| 状态 | 仍为 UNCONFIRMED，等维护者确认 |
+
+下面是当时使用的材料。
 
 > 目标：<https://bugs.winehq.org/show_bug.cgi?id=53795>
 > 状态 UNCONFIRMED，最后修改 2022-10-15（提交当天），CC 列表 **0 人**。
