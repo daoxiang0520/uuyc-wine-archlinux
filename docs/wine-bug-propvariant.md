@@ -9,9 +9,8 @@ application.**
 > crash is `qwindows.dll` handing `QString::fromWCharArray` an unset
 > `OUTLINETEXTMETRICW.otmpFullName` offset; it reproduces identically on stock Wine
 > and on this patched build, and it is contained by the shim described in
-> `qwindows-fontname-crash.md`. The defect below stands on its own -- it is
-> reproducible in isolation with a poison test that needs nothing but Wine, and any
-> caller that ignores the `HRESULT` reads uninitialised memory.
+> `qwindows-fontname-crash.md`. Whether it is a defect at all is
+> **unresolved** -- see "它到底算不算 bug" below.
 
 ## Summary
 
@@ -134,6 +133,29 @@ terminator when `size < 0`:
 1800bf123:  inc  %r8d
 1800bf126:  lea  0x2(%rax),%rax     ; 2 bytes per step: UTF-16
 ```
+
+## 它到底算不算 bug：未决（2026-09-18 补充）
+
+本文件早先写过一句 **"an uninitialised out-parameter is a defect regardless of what
+it does or does not cause"** —— **那句断言没有经过核实，现予撤回。**
+
+毒化测试证明的是一个**事实**：`GetValue` 返回 `E_NOTIMPL` 时没有碰 `*var`。
+从"事实"到"缺陷"之间还差一环，而那一环我没验：
+
+**COM 的通行规则是，方法失败时出参不保证被设置，调用方必须检查 `HRESULT`。**
+按这条规则，Wine 的行为**可能是合规的**。要判断只能实测 Windows 在失败路径下的
+行为 —— 而本机没有 Windows，测不了。
+
+实测到的应用行为也不支持"这是 bug"：`GameViewer.exe` 调用
+`GetValue(PKEY_AppUserModel_ID)` 得到 `E_NOTIMPL` 后**照常回退到另一个 API 继续运行**，
+没有崩溃、没有读到垃圾。也就是说**它没有被这个缺陷伤到**。
+
+因此本条的正确定性是 **"行为差异待确认"**，而不是"已确认的缺陷"。它可能以
+"no impact" 被关闭 —— 那同样是一个有价值的结果，因为它给出了明确答案。
+
+真正有真实应用支撑的缺口是**下一条**：`GetValue(PKEY_AppUserModel_ID)` 与
+`GetCurrentApplicationUserModelId` 都是 stub，任何应用都拿不到自己的
+AppUserModelID。Chromium 系应用（含 WebView2）在启动时确实会去要它。
 
 ## Honest caveat
 
