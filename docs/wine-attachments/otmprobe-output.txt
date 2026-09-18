@@ -1,0 +1,31 @@
+=== GetOutlineTextMetricsW: are the name offsets inside the buffer? ===
+protocol: query size -> malloc(size) -> fill with cbData == size (exactly what qwindows.dll does)
+
+  [Noto Sans]  size=360 ret=360 otmSize=360
+    otmpFamilyName   = 232    "Noto Sans"
+    otmpFaceName     = 268    "Noto Sans Regular"
+    otmpStyleName    = 252    "Regular"
+    otmpFullName     = 304    "2.015;GOOG;NotoSans-Regular"
+  [Noto Sans] required=360 buffer=232 ret=232 -> otmpFullName=304, i.e. 72 bytes PAST the end of the buffer
+  [Noto Sans]  size=360 ret=360 otmSize=360
+    otmpFamilyName   = 232    "Noto Sans"
+    otmpFaceName     = 268    "Noto Sans Regular"
+    otmpStyleName    = 252    "Regular"
+    otmpFullName     = 304    "2.015;GOOG;NotoSans-Regular"
+  [Noto Sans] required=360 buffer=232 ret=232 -> otmpFullName=304, i.e. 72 bytes PAST the end of the buffer
+  [Noto Sans]  size=360 ret=360 otmSize=360
+  ... (1260 font instances follow; one sample block per instance, identical shape) ...
+
+=== summary ===
+  fonts checked              : 1260
+  filled and offsets in range: 1260
+  query returned 0           : 0
+  fill call returned 0       : 0
+  offsets outside the buffer : 0
+
+--- truncation pass (buffer smaller than the reported size) ---
+  fonts tested               : 1260
+  reported failure (ret == 0): 0
+  reported success but the offsets point past the buffer: 1260
+
+VERDICT: Wine filled every font's offsets inside the buffer it asked for.

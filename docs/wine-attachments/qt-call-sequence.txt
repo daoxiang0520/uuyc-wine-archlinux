@@ -1,0 +1,22 @@
+# Two excerpts from a single run of GameViewer.exe under Wine 11.17 on Arch Linux.
+# Log written by a shim inside the process: it hooks GetOutlineTextMetricsW in
+# qwindows.dll's import table and QString::fromWCharArray in every module.
+#
+# caller qwindows.dll+0x7041f = the size query, +0x7043a = the fill.
+# Every other font in the session produces an agreeing QUERY/FILL pair; the pair
+# immediately before each crash is the bitmap-only emoji face, where both return 0.
+#
+# NOTE the pointer: the FILL line's otm= and the next line's rdi= are the same
+# address, which is what ties the failed call to the bad pointer Qt then uses.
+
+===== excerpt 1 (lines 172-175) =====
+[GetOutlineTextMetricsW] FILL        caller=qwindows.dll+0x7043a                     cbData=404    otm=00007F0EE71ECD50 -> ret=404
+[GetOutlineTextMetricsW] QUERY       caller=qwindows.dll+0x7041f                     cbData=0      otm=0000000000000000 -> ret=0 FAILED, face=[Noto Color Emoji]
+[GetOutlineTextMetricsW] FILL        caller=qwindows.dll+0x7043a                     cbData=0      otm=00007F0EDD83FCA0 -> ret=0 FAILED, face=[Noto Color Emoji]
+[fromWCharArray] BLOCKED caller=qwindows.dll+0x704f0                         str=37379525F4B62FD3 size=-1     rdi=0x7f0edd83fca0 u32@0x00=1869901646 u64@0xc8=0x2223000000000073 u64@0xe0=0x3737161717323333 -> passing NULL so Qt cannot walk it
+
+===== excerpt 2 (lines 363-366), the next time the same font is set up =====
+[GetOutlineTextMetricsW] FILL        caller=qwindows.dll+0x7043a                     cbData=404    otm=00007F0EE71ECD50 -> ret=404
+[GetOutlineTextMetricsW] QUERY       caller=qwindows.dll+0x7041f                     cbData=0      otm=0000000000000000 -> ret=0 FAILED, face=[Noto Color Emoji]
+[GetOutlineTextMetricsW] FILL        caller=qwindows.dll+0x7043a                     cbData=0      otm=00007F0EE76E81F0 -> ret=0 FAILED, face=[Noto Color Emoji]
+[fromWCharArray] BLOCKED caller=qwindows.dll+0x704f0                         str=00628310E96EDAF2 size=-1     rdi=0x7f0ee76e81f0 u32@0x00=1869901646 u64@0xc8=0x2030000000073 u64@0xe0=0x62040202005902 -> passing NULL so Qt cannot walk it
