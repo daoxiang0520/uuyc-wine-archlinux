@@ -115,13 +115,13 @@ sha256sums=(
   '4c824edef40326ef355ad0e745c2a975a43788b53128313c3dccf31d62bf1834'  # vdshim.dll
   '4010bb4d4fc05bdf3732b7b1c114788f3c2e06e08f70b101f01ceba6f7cc2133'  # vdshim-deploy.sh
   '07ed33c1f92639d3834e40a950331813a3de7f5b74c027d86f36b43520f9c8c9'  # vdshim-gen-forwarders.sh
-  '21b8fec5d34f12e27b3e64b234b4c23f8bd75ef55f687f62dd9734a53389f0b0'  # vdshim-source.c
+  '1b5fbfb7caa121ff1ab3b50b8c048e2640b33c05ae8502fc1b6bf71737a9d9f1'  # vdshim-source.c
   '81b482b98c8031b7d9c7523f7bcd03e09beb46fbe4ecf7496a11dc7bd7619f17'  # vdshim-iathook.c
   '1ff56ca63e478978716b64b06becbb674d6cccb76a8cadec39fadabb976bca90'  # vdshim-test.c
   'c841020cc115be1a439686e7f146c012d1dfd056ab2b85cf6dd0788c56a49fc5'  # vdshim-test.exe
   'a55bf7d10211616967119ff57f4fe82bebf0b0ad12b93f6eafd3f2f2928fa840'  # uuyc-wine.desktop
   'dd3bde42df39ac5e5731dd2cf26296b81a5206066cadc6a67f8d812c6b941934'  # uuyc.desktop
-  '50c5b673caccc3460cfee54a95c99148cea0f13bbf9cd2a153f1b53bb5edf5f2'  # wine-bug-propvariant.md
+  '665de31aef486d5ecacc4ddf61665c63380b3f7becf6e905904a5589ddc17174'  # wine-bug-propvariant.md
   '4cc2a4ae0b2c20f50728ec19c2f418459c730e1a4e990adaaa07170345cd0acd'  # qwindows-fontname-crash.md
   '2ba7476ca2f20e10377c4a2868c4346e7ca30e64eebf299647851945d1cbc289'  # uuyc-wine.install
   'e91389eac5bc82c8398518cc7fd04ffbcc76ed009fcbec9f951015340a9ca2b3'  # LICENSE
