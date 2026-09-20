@@ -16,3 +16,43 @@ work/
 # 与 support/ 下同名的副本。真正的源在 support/ 下，这些是派生物。
 uuyc-wine/uuyc-installer.exe
 uuyc-android/com.netease.uuremote.apk
+
+# makepkg materialises every file:// source into $startdir under the source's
+# *name*, so a build drops a copy of e.g. support/vdshim/vdshim.dll next to the
+# PKGBUILD. The list below is derived from both PKGBUILDs: a name appears here
+# exactly when its URL points somewhere other than $startdir/<name>.
+uuyc-wine/uuyc-installer.exe
+uuyc-wine/wevtapi.S
+uuyc-wine/wevtapi.def
+uuyc-wine/shshim-source.c
+uuyc-wine/shshim-forwarders.c
+uuyc-wine/shshim-forwarders.S
+uuyc-wine/shshim-forwarders.h
+uuyc-wine/shshim-forwarders.def
+uuyc-wine/shshim-test.c
+uuyc-wine/shshim-test.exe
+uuyc-wine/shshim.dll
+uuyc-wine/shshim-deploy.sh
+uuyc-wine/shshim-gen-forwarders.sh
+uuyc-wine/uictl-source.c
+uuyc-wine/uictl.exe
+uuyc-wine/uictl-README.md
+uuyc-wine/bridge-js
+uuyc-wine/bridge-README.md
+uuyc-wine/winepatch.sh
+uuyc-wine/winepatch-shell32.patch
+uuyc-wine/uuyc-d3dprobe.c
+uuyc-wine/uuyc-d3dprobe.exe
+uuyc-wine/d3dprobe-README.md
+uuyc-wine/vkvideo-probe.c
+uuyc-wine/check-abi.sh
+uuyc-wine/vdshim.dll
+uuyc-wine/vdshim-deploy.sh
+uuyc-wine/vdshim-gen-forwarders.sh
+uuyc-wine/vdshim-source.c
+uuyc-wine/vdshim-iathook.c
+uuyc-wine/vdshim-test.c
+uuyc-wine/vdshim-test.exe
+uuyc-wine/wine-bug-propvariant.md
+uuyc-wine/qwindows-fontname-crash.md
+uuyc-android/com.netease.uuremote.apk
