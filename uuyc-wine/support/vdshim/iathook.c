@@ -1,50 +1,54 @@
 /*
- * iathook.c -- contain the qwindows.dll QString crash and identify its caller.
+ * iathook.c -- keep QString::fromWCharArray away from pointers Qt cannot walk.
  *
- * Established from the Sentry minidump (e8ef8316-...dmp) by reading the
- * faulting CONTEXT out of MINIDUMP_EXCEPTION_STREAM (rip == the exception
- * record's address, so the context is the real faulting one):
+ * The crash this exists for
+ * -------------------------
+ * Clicking "enter desktop" in the client killed GameViewer.exe in 1-3s, every time,
+ * at Qt5Core.dll+0xbf11b -- QString::fromUtf16+0x2b, the `cmp WORD PTR [rdx],cx`
+ * that starts the NUL-terminated scan. The caller chain recovered from the Sentry
+ * minidump is
  *
- *   fault  EXCEPTION 0xc0000005 at Qt5Core.dll + 0xbf11b
- *          0xbf0f0 is ?fromUtf16@QString@@SA?AV1@PEBGH@Z, so +0x2b is
- *              cmp WORD PTR [rdx],cx        <- the strlen loop entry
- *   rdx    the string pointer, unmapped garbage, different every run
- *   r8     0 -- because 0xbf118 is `mov r8d,ecx`, i.e. the callee already
- *          overwrote the incoming size; the branch that reaches 0xbf11b is
- *          only taken when the incoming size was NEGATIVE (NUL-terminated mode)
+ *   qwindows.dll+0x704f0   (QWindowsFontEngine construction)
+ *     mov rdx,[rdi+0xe0]        ; (char *)otm + otm-><0xe0>
+ *     add rdx,rdi
+ *     mov r8d,0xffffffff        ; size = -1 -> NUL-terminated mode
+ *     call [Qt5Core!?fromWCharArray@QString@@SA?AV1@PEB_WH@Z]
  *
- * Walking the stack then gave the caller chain exactly:
+ * 0xe0 is OUTLINETEXTMETRICW.otmpFullName, and those four name fields are byte
+ * offsets from the start of the structure, so Qt is following the documented rule.
+ * The structure is what is wrong: for a bitmap-only SFNT face such as Noto Color
+ * Emoji, Wine's GetOutlineTextMetricsW returns 0 and writes nothing, Qt does not
+ * test the return, allocates a zero-size buffer and reads otmpFullName out of it.
+ * The offset is then heap leftovers, and Qt walks them.
  *
- *   [rsp+0x48] Qt5Core.dll+0x4dcb   = ?fromWCharArray@QString@@ at 0x4db0, +0x1b
- *   [rsp+0x88] qwindows.dll+0x704f0 = the caller of fromWCharArray
+ * Reported upstream as Wine bug 53795, with a fix under review in MR !11388
+ * ("win32u: Return outline metrics for bitmap-only SFNT fonts"). Until that lands,
+ * this file is what keeps the client alive.
  *
- * (0x88 is not a guess: fromWCharArray is `push rbx; sub rsp,0x30`, the call
- * pushes 8, fromUtf16 is `push rbx; sub rsp,0x40`, so the outer return address
- * sits 0x38+8+0x48 = 0x88 above fromUtf16's rsp. And qwindows.dll+0x704ea is
- * `call [Qt5Core!?fromWCharArray@QString@@SA?AV1@PEB_WH@Z]`, an IAT call, so
- * the return address lands on +0x704f0 with the arguments still in registers:)
+ * What it does
+ * ------------
+ * Replaces QString::fromWCharArray in every module that imports it and validates
+ * the pointer before Qt is allowed to walk it:
  *
- *   1800704d5  mov rdx,[rdi+0xe0]        ; qwindows-internal object field
- *   1800704e1  add rdx,rdi               ; (char *)obj + *(qint64 *)(obj+0xe0)
- *   1800704e4  mov r8d,0xffffffff        ; size = -1  -> strlen mode
- *   1800704ea  call [IAT Qt5Core!QString::fromWCharArray]
+ *   size >= 0   the whole size * sizeof(wchar_t) range must be committed and readable
+ *   size <  0   a NUL terminator must exist inside the committed regions reachable
+ *               from the pointer, since that is the only thing Qt's qu_strlen stops at
  *
- * So qwindows.dll hands QString::fromWCharArray a non-NUL-terminated,
- * non-mapped pointer and asks Qt to strlen it. Nothing in Qt can survive that.
+ * When validation fails the real function is called with NULL, which Qt answers with
+ * the null QString without dereferencing anything, and the caller and value are
+ * appended to C:\uuyc-qtguard.log. The affected font falls back; the process lives.
  *
- * This file does two things and nothing else:
- *   1. hooks QString::fromWCharArray in every module that imports it, validates
- *      the pointer before letting Qt walk it, and substitutes a null string
- *      when it is unmapped. The client then survives and keeps going.
- *   2. logs caller + arguments, so the remaining defect is named rather than
- *      guessed at.
+ * Verifying it is working: the client survives "enter desktop", and the log has two
+ * BLOCKED lines, both from qwindows.dll+0x704f0. Without it the process dies in
+ * about a second.
  *
- * IMPORTANT: this is containment, not an explanation. The bad pointer still
- * comes from qwindows.dll; logging its value only says which call path is
- * broken.
+ * Two implementation details that matter:
  *
- * Because qwindows.dll is a PLUGIN loaded long after this DLL's DllMain, the
- * import patch is re-run from a polling thread; see install_thread().
+ *  - qwindows.dll is a PLUGIN. Qt loads it at QGuiApplication construction, long
+ *    after this DLL's DllMain, so a one-shot patch at load time misses the exact
+ *    slot that crashes. The patch is therefore re-run from a polling thread.
+ *  - The patch must be idempotent. Without the "already ours" check the second pass
+ *    records the replacement as the original and the guard calls itself forever.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -113,12 +117,10 @@ static int range_ok(const void *addr, size_t len)
 /*
  * Can Qt safely strlen() this as a NUL-terminated wchar_t string?
  *
- * Qt's fromUtf16 does `if (size < 0) size = qu_strlen(str);` and that walk
- * never stops until it finds a 0 wchar_t. So a pointer is only safe when a
- * terminator exists inside the committed region(s) reachable from it. Scanning
- * the region we already proved readable is fine; the walk is bounded by the
- * terminator or by the region end, and each step stays inside a region that
- * VirtualQuery just declared accessible.
+ * Qt's fromUtf16 does `if (size < 0) size = qu_strlen(str);` and that walk never
+ * stops until it finds a 0 wchar_t, so a pointer is only safe when a terminator
+ * exists inside the committed region(s) reachable from it. Scanning regions that
+ * VirtualQuery just declared accessible cannot fault.
  */
 static int wchar_terminated(const wchar_t *s)
 {
@@ -155,107 +157,9 @@ typedef void *(__cdecl *from_wchar_fn)(void *ret, const wchar_t *str, int size);
 static from_utf16_fn real_from_utf16;
 static from_wchar_fn real_from_wchar;
 
-/*
- * The crashing call site (qwindows.dll+0x704d5) builds its argument from rdi:
- *
- *     mov rdx,[rdi+0xe0]
- *     add rdx,rdi
- *
- * which is the documented "those four name fields are byte offsets, not
- * pointers" rule for OUTLINETEXTMETRICW -- 0xe0 is otmpFullName. rdi is set once,
- * right after malloc, from the size the size query returned, and rdi is
- * non-volatile in the Microsoft x64 ABI, so it still holds that pointer when
- * fromWCharArray is entered; neither fromWCharArray nor fromUtf16 writes it.
- *
- * Capturing it separates "the pointer is garbage" from "the structure was never
- * filled": if rdi really is the OTM buffer then *(UINT *)rdi is otmSize and
- * *(UINT64 *)(rdi+0xe0) is otmpFullName. It has to be read before this hook's own
- * prologue can reuse rdi, hence the naked entry.
- */
-unsigned long long uuyc_caller_rdi;
-
-void * __cdecl hooked_from_wchar(void *ret, const wchar_t *str, int size);
-
-/*
- * The decisive one. qwindows.dll calls this twice:
- *   size = GetOutlineTextMetricsW(dc, 0, NULL);      <- the query
- *   otm  = malloc(size);
- *   GetOutlineTextMetricsW(dc, size, otm);           <- the fill
- * Logging both calls with their return value shows whether the size the caller
- * was told equals the size the filler demanded, and whether the fill actually
- * happened.
- */
-typedef UINT (__cdecl *get_otm_fn)(HDC hdc, UINT cbData, OUTLINETEXTMETRICW *otm);
-static get_otm_fn real_get_otm;
-
-static UINT __cdecl hooked_get_otm(HDC hdc, UINT cbData, OUTLINETEXTMETRICW *otm)
+static void * __cdecl hooked_from_wchar(void *ret, const wchar_t *str, int size)
 {
-    char caller[320], buf[512];
-    UINT ret;
-
-    describe(__builtin_return_address(0), caller, sizeof(caller));
-    ret = real_get_otm(hdc, cbData, otm);
-    if (ret == 0) {
-        /* The documented failure value. Name the font, so the failure can be
-         * attributed: a DC holding a non-scalable (bitmap) face has no outline
-         * metrics at all, which is legitimate and is what Windows reports too. */
-        WCHAR face[LF_FACESIZE];
-        face[0] = 0;
-        GetTextFaceW(hdc, LF_FACESIZE, face);
-        snprintf(buf, sizeof(buf),
-                 "[GetOutlineTextMetricsW] %-11s caller=%-40s cbData=%-6u otm=%p -> ret=0 "
-                 "FAILED, face=[%ls]\r\n",
-                 otm ? "FILL" : "QUERY", caller, cbData, (void *)otm, face);
-    } else {
-        snprintf(buf, sizeof(buf),
-                 "[GetOutlineTextMetricsW] %-11s caller=%-40s cbData=%-6u otm=%p -> ret=%u\r\n",
-                 otm ? "FILL" : "QUERY", caller, cbData, (void *)otm, ret);
-    }
-    log_line(buf);
-    return ret;
-}
-
-__attribute__((naked)) static void *from_wchar_entry(void)
-{
-    __asm__ __volatile__ (
-        "movq %rdi, uuyc_caller_rdi(%rip)\n\t"
-        "jmp  hooked_from_wchar\n\t"
-    );
-}
-
-#define TRACE_LIMIT 40
-static int wchar_trace_left = TRACE_LIMIT;
-
-/*
- * Read the OTM fields the crash site is about. Safe by construction: the caller
- * already dereferenced [rdi+0xe0] successfully before calling us, so the same
- * read cannot fault here where it did not fault there.
- */
-static void describe_otm(unsigned long long rdi, char *out, size_t out_size)
-{
-    MEMORY_BASIC_INFORMATION mbi;
-
-    if (!rdi) {
-        snprintf(out, out_size, "rdi=NULL");
-        return;
-    }
-    if (!VirtualQuery((const void *)rdi, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT
-            || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
-        snprintf(out, out_size, "rdi=0x%llx (unreadable)", rdi);
-        return;
-    }
-    snprintf(out, out_size,
-             "rdi=0x%llx u32@0x00=%lu u64@0xc8=0x%llx u64@0xe0=0x%llx",
-             rdi, (unsigned long)*(const unsigned int *)rdi,
-             (unsigned long long)*(const unsigned long long *)(rdi + 0xc8),
-             (unsigned long long)*(const unsigned long long *)(rdi + 0xe0));
-}
-
-void * __cdecl hooked_from_wchar(void *ret, const wchar_t *str, int size)
-{
-    char caller[320], buf[1024], otm[256];
-    void *retaddr = __builtin_return_address(0);
-    unsigned long long rdi = uuyc_caller_rdi;
+    char caller[320], buf[768];
     int size_ok = 1;
 
     if (str) {
@@ -266,34 +170,21 @@ void * __cdecl hooked_from_wchar(void *ret, const wchar_t *str, int size)
     }
 
     if (str && !size_ok) {
-        describe(retaddr, caller, sizeof(caller));
-        describe_otm(rdi, otm, sizeof(otm));
+        describe(__builtin_return_address(0), caller, sizeof(caller));
         snprintf(buf, sizeof(buf),
-                 "[fromWCharArray] BLOCKED caller=%-44s str=%p size=%-6d %s "
+                 "[fromWCharArray] BLOCKED caller=%-44s str=%p size=%-6d "
                  "-> passing NULL so Qt cannot walk it\r\n",
-                 caller, (const void *)str, size, otm);
+                 caller, (const void *)str, size);
         log_line(buf);
         return real_from_wchar(ret, NULL, 0);
-    }
-
-    if (wchar_trace_left > 0) {
-        wchar_trace_left--;
-        describe(retaddr, caller, sizeof(caller));
-        describe_otm(rdi, otm, sizeof(otm));
-        snprintf(buf, sizeof(buf),
-                 "[fromWCharArray] ok      caller=%-44s str=%p size=%-6d first4=%04x %04x %04x %04x  %s\r\n",
-                 caller, (const void *)str, size,
-                 str ? str[0] : 0, str ? str[1] : 0, str ? str[2] : 0, str ? str[3] : 0,
-                 otm);
-        log_line(buf);
     }
     return real_from_wchar(ret, str, size);
 }
 
+/* The same protection on the sibling entry point, for the same reason. */
 static void * __cdecl hooked_from_utf16(void *ret, const unsigned short *str, int size)
 {
     char caller[320], buf[768];
-    void *retaddr = __builtin_return_address(0);
     int size_ok = 1;
 
     if (str) {
@@ -303,7 +194,7 @@ static void * __cdecl hooked_from_utf16(void *ret, const unsigned short *str, in
             size_ok = wchar_terminated((const wchar_t *)str);
     }
     if (str && !size_ok) {
-        describe(retaddr, caller, sizeof(caller));
+        describe(__builtin_return_address(0), caller, sizeof(caller));
         snprintf(buf, sizeof(buf),
                  "[fromUtf16] BLOCKED caller=%-44s str=%p size=%d\r\n",
                  caller, (const void *)str, size);
@@ -367,7 +258,7 @@ static int hook_symbol(const char *want_module, const char *want_symbol, void *r
                     continue;
 
                 /* Already ours: the installer runs repeatedly, and without this
-                 * check the second pass would record `replacement` as the
+                 * check the second pass would record the replacement as the
                  * original and recurse forever. */
                 if (thunk->u1.Function == (ULONG_PTR)replacement) {
                     hits++;
@@ -399,11 +290,9 @@ static void install_once(void)
     int a, b;
 
     a = hook_symbol("Qt5Core.dll", "?fromWCharArray@QString@@SA?AV1@PEB_WH@Z",
-                    (void *)from_wchar_entry, (void **)&real_from_wchar);
+                    (void *)hooked_from_wchar, (void **)&real_from_wchar);
     b = hook_symbol("Qt5Core.dll", "?fromUtf16@QString@@SA?AV1@PEBGH@Z",
                     (void *)hooked_from_utf16, (void **)&real_from_utf16);
-    hook_symbol("GDI32.dll", "GetOutlineTextMetricsW",
-                (void *)hooked_get_otm, (void **)&real_get_otm);
     if (a || b) {
         char buf[192];
         snprintf(buf, sizeof(buf),
@@ -414,10 +303,10 @@ static void install_once(void)
 }
 
 /*
- * qwindows.dll is a Qt PLUGIN: Qt loads it at QGuiApplication construction,
- * well after this DLL's DllMain has run. A one-shot patch at load time would
- * therefore miss the very import slot that crashes, so keep re-running the
- * (idempotent) patch until qwindows.dll shows up, then a little longer.
+ * qwindows.dll is a Qt PLUGIN: Qt loads it at QGuiApplication construction, well
+ * after this DLL's DllMain has run, so the import slot that crashes does not exist
+ * yet at load time. Keep re-running the (idempotent) patch until the plugin has
+ * appeared, then once more.
  */
 static DWORD WINAPI install_thread(LPVOID param)
 {

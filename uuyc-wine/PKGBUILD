@@ -112,11 +112,11 @@ sha256sums=(
   '85b6be8d946684e7c32e3a8a533176734f0e7a0972dd89e31091b4443f6351f2'  # vkvideo-probe.c
   'eec0f78811a08cc4cf5001b1c920d88075437425e9586c40ad117e22f695cf0e'  # check-abi.sh
   '838f6d062f922f13024c87f0a8a84fdd1b35f0640dbb623fd7c20e4532d13ce0'  # uuyc-wine-vdshim
-  '4c824edef40326ef355ad0e745c2a975a43788b53128313c3dccf31d62bf1834'  # vdshim.dll
+  '9e9f51a18e60e8527ca026036eb688ebfb89b4c955bf52ab59c6af19da502ff8'  # vdshim.dll
   '4010bb4d4fc05bdf3732b7b1c114788f3c2e06e08f70b101f01ceba6f7cc2133'  # vdshim-deploy.sh
   '07ed33c1f92639d3834e40a950331813a3de7f5b74c027d86f36b43520f9c8c9'  # vdshim-gen-forwarders.sh
   '1b5fbfb7caa121ff1ab3b50b8c048e2640b33c05ae8502fc1b6bf71737a9d9f1'  # vdshim-source.c
-  '81b482b98c8031b7d9c7523f7bcd03e09beb46fbe4ecf7496a11dc7bd7619f17'  # vdshim-iathook.c
+  'da9e6347e08eb8d5a04be4be1e3123eac1fd9fb3fa4d3b13168d05ffc6126a0f'  # vdshim-iathook.c
   '1ff56ca63e478978716b64b06becbb674d6cccb76a8cadec39fadabb976bca90'  # vdshim-test.c
   'c841020cc115be1a439686e7f146c012d1dfd056ab2b85cf6dd0788c56a49fc5'  # vdshim-test.exe
   'a55bf7d10211616967119ff57f4fe82bebf0b0ad12b93f6eafd3f2f2928fa840'  # uuyc-wine.desktop
